@@ -131,7 +131,19 @@ scripts\verify-system-app-device.ps1
 
 脚本检查通过只是静态/系统状态门禁；第 4、8、10、11、12、13、14 项仍必须在实际 Android 12 ROM 真机上验收。
 
-## 16. System App 真机自动化测试
+## 16. 旧版安装迁移到 platform certificate
+
+首次从现有 Device Owner / 普通 APK 切换到本 System App ROM 时，必须先确认设备上现有 `com.punch.app` 的签名证书。
+
+如果旧 APK 不是当前 ROM 的 platform certificate，则它**不能**通过普通 `adb install -r` / PackageInstaller 直接升级为 platform-signed APK；Android 会按同包名签名不一致拒绝更新。生产迁移应采用受控方案之一：
+
+1. 新出厂设备：直接刷入包含 platform-signed FaceAPK 的完整 Android 12 system image，这是推荐路径。
+2. 已部署测试设备：备份所需业务数据后，解除旧 Device Owner（如存在），卸载/清理旧数据包，再刷入 System App ROM。
+3. 需要保留业务数据的存量设备：必须单独设计签名迁移/数据迁移流程，未验证前不要把“保数据原地覆盖”作为生产能力。
+
+从设备完成第一次 platform-signed System App 安装以后，后续 OTA APK必须继续使用同一 platform certificate；此后 `UpdateManager` 的静默自更新路径才是稳定的。
+
+## 17. System App 真机自动化测试
 
 原有 `deviceOwnerTest` maintenance bridge 继续复用，但现在同时支持 Android 12 System App：
 
