@@ -44,8 +44,6 @@ public final class SystemAppController {
             "android.permission.STATUS_BAR";
     public static final String PERMISSION_INSTALL_PACKAGES =
             "android.permission.INSTALL_PACKAGES";
-    public static final String PERMISSION_REBOOT =
-            "android.permission.REBOOT";
     public static final String PERMISSION_MANAGE_USERS =
             "android.permission.MANAGE_USERS";
     public static final String PERMISSION_SET_PREFERRED_APPLICATIONS =
@@ -166,11 +164,6 @@ public final class SystemAppController {
     public static boolean canManageUsers(Context context) {
         return isPlatformSystemApp(context)
                 && hasPermission(context, PERMISSION_MANAGE_USERS);
-    }
-
-    public static boolean canReboot(Context context) {
-        return isPlatformSystemApp(context)
-                && hasPermission(context, PERMISSION_REBOOT);
     }
 
     public static boolean isKioskPoliciesApplied() {
