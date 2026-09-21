@@ -316,6 +316,10 @@ public final class WifiConfigDialogHelper {
 
     private void scanWifiNetworksWithChecks(ArrayAdapter<String> adapter, AutoCompleteTextView ssidInput) {
         cachePendingWifiScan(adapter, ssidInput);
+
+        if (!hasWifiScanPermission() || !isLocationServiceEnabled()) {
+            PlatformPermissionBootstrap.prepareWifiScanAccess(activity);
+        }
         if (!hasWifiScanPermission()) {
             KioskManager.ensureOwnerRuntimePermissions(activity);
             if (!hasWifiScanPermission()) {
