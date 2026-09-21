@@ -21,7 +21,7 @@ public final class WifiAutoReconnectManager {
         WIFI_ENABLING,
         SUBMITTED,
         NO_SAVED_WIFI,
-        NOT_DEVICE_OWNER,
+        NOT_MANAGED_DEVICE,
         WIFI_SERVICE_UNAVAILABLE,
         NETWORK_CONFIG_FAILED,
         PERMISSION_DENIED,
@@ -214,7 +214,7 @@ public final class WifiAutoReconnectManager {
 
         String getSavedPassword();
 
-        boolean isDeviceOwner();
+        boolean canManageWifi();
 
         boolean hasWifiService();
 
@@ -258,8 +258,8 @@ public final class WifiAutoReconnectManager {
         }
 
         @Override
-        public boolean isDeviceOwner() {
-            return appContext != null && KioskManager.isDeviceOwner(appContext);
+        public boolean canManageWifi() {
+            return appContext != null && KioskManager.isManagedDevice(appContext);
         }
 
         @Override
