@@ -35,10 +35,44 @@ jobs:
       - name: Assemble release APK
         run: ./gradlew assembleRelease --stacktrace
 
-      - name: Validate system-app XML
+      - name: Validate system-app contract
         run: |
           python3 - <<'PY'
+          from pathlib import Path
           import xml.etree.ElementTree as ET
-          ET.parse("system-app/privapp-permissions-com.punch.app.xml")
-          print("system-app XML OK")
+
+          manifest_path = Path("app/src/main/AndroidManifest.xml")
+          manifest = manifest_path.read_text(encoding="utf-8")
+          required_permissions = [
+              "android.permission.WRITE_SECURE_SETTINGS",
+              "android.permission.WRITE_SETTINGS",
+              "android.permission.STATUS_BAR",
+              "android.permission.INSTALL_PACKAGES",
+              "android.permission.MANAGE_USERS",
+              "android.permission.MANAGE_ROLE_HOLDERS",
+              "android.permission.GRANT_RUNTIME_PERMISSIONS",
+              "android.permission.READ_PRIVILEGED_PHONE_STATE",
+              "android.permission.DISABLE_KEYGUARD",
+              "android.permission.START_ACTIVITIES_FROM_BACKGROUND",
+          ]
+          missing = [p for p in required_permissions if p not in manifest]
+          if missing:
+              raise SystemExit(f"Manifest missing system-app permissions: {missing}")
+          if "android:sharedUserId" in manifest:
+              raise SystemExit("System App contract forbids android:sharedUserId")
+          if 'android:persistent="true"' not in manifest:
+              raise SystemExit("System App contract requires android:persistent=true")
+
+          xml_path = Path("system-app/privapp-permissions-com.punch.app.xml")
+          root = ET.parse(xml_path).getroot()
+          packages = root.findall("privapp-permissions")
+          if not any(x.attrib.get("package") == "com.punch.app" for x in packages):
+              raise SystemExit("privapp allowlist package mismatch")
+
+          bp = Path("system-app/Android.bp.example").read_text(encoding="utf-8")
+          for token in ['certificate: "platform"', "privileged: true"]:
+              if token not in bp:
+                  raise SystemExit(f"Android.bp missing: {token}")
+
+          print("Android 12 system-app contract OK")
           PY
