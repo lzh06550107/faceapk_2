@@ -10,7 +10,11 @@ Write-Host "=== APK path ==="
 
 Write-Host ""
 Write-Host "=== Package privileges ==="
-& $Adb shell dumpsys package $PackageName | Select-String -Pattern "WRITE_SECURE_SETTINGS|WRITE_SETTINGS|STATUS_BAR|INSTALL_PACKAGES|MANAGE_USERS|READ_PRIVILEGED_PHONE_STATE|MANAGE_ROLE_HOLDERS|GRANT_RUNTIME_PERMISSIONS|START_ACTIVITIES_FROM_BACKGROUND"
+& $Adb shell dumpsys package $PackageName | Select-String -Pattern "WRITE_SECURE_SETTINGS|WRITE_SETTINGS|STATUS_BAR|INSTALL_PACKAGES|MANAGE_USERS|READ_PRIVILEGED_PHONE_STATE|MANAGE_ROLE_HOLDERS|GRANT_RUNTIME_PERMISSIONS|START_ACTIVITIES_FROM_BACKGROUND|ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION"
+
+Write-Host ""
+Write-Host "=== Wi-Fi scan runtime permission ==="
+& $Adb shell dumpsys package $PackageName | Select-String -Pattern "android.permission.ACCESS_FINE_LOCATION: granted=|android.permission.ACCESS_COARSE_LOCATION: granted="
 
 Write-Host ""
 Write-Host "=== HOME resolution ==="
