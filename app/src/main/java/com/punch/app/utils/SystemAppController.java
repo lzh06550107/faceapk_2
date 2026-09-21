@@ -3,7 +3,6 @@ package com.punch.app.utils;
 import android.Manifest;
 import android.app.Activity;
 import android.app.KeyguardManager;
-import android.app.role.RoleManager;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -70,6 +69,9 @@ public final class SystemAppController {
             PERMISSION_START_ACTIVITIES_FROM_BACKGROUND
     };
 
+    private static final String ROLE_MANAGER_CLASS = "android.app.role.RoleManager";
+    private static final String ROLE_SERVICE = "role";
+    private static final String ROLE_HOME = "android.app.role.HOME";
     private static volatile boolean kioskPoliciesApplied;
     private static final long HOME_ROLE_CHANGE_TIMEOUT_MS = 2_000L;
     @SuppressWarnings("deprecation")
@@ -309,43 +311,77 @@ public final class SystemAppController {
             AppLogger.w(TAG, "MANAGE_ROLE_HOLDERS missing; cannot persist kiosk HOME");
             return false;
         }
-        RoleManager roleManager =
-                (RoleManager) context.getSystemService(Context.ROLE_SERVICE);
-        if (roleManager == null || !roleManager.isRoleAvailable(RoleManager.ROLE_HOME)) {
-            AppLogger.w(TAG, "HOME role is unavailable");
+        try {
+            Object roleManager = context.getSystemService(ROLE_SERVICE);
+            if (roleManager == null) {
+                AppLogger.w(TAG, "RoleManager unavailable");
+                return false;
+            }
+            Class<?> roleManagerClass = Class.forName(ROLE_MANAGER_CLASS);
+            if (!invokeRoleBoolean(roleManagerClass, roleManager, "isRoleAvailable", ROLE_HOME)) {
+                AppLogger.w(TAG, "HOME role is unavailable");
+                return false;
+            }
+            if (invokeRoleBoolean(roleManagerClass, roleManager, "isRoleHeld", ROLE_HOME)) {
+                return true;
+            }
+            return requestHomeRoleChange(
+                    context,
+                    roleManagerClass,
+                    roleManager,
+                    true
+            );
+        } catch (Exception e) {
+            AppLogger.e(TAG, "Unable to inspect Android 12 HOME role", e);
             return false;
         }
-        if (roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
-            return true;
-        }
-        return requestHomeRoleChange(context, roleManager, true);
     }
 
     private static void clearPreferredHome(Context context) {
-        RoleManager roleManager =
-                (RoleManager) context.getSystemService(Context.ROLE_SERVICE);
-        if (roleManager == null
-                || !roleManager.isRoleAvailable(RoleManager.ROLE_HOME)
-                || !roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
-            return;
+        try {
+            Object roleManager = context.getSystemService(ROLE_SERVICE);
+            if (roleManager == null) {
+                return;
+            }
+            Class<?> roleManagerClass = Class.forName(ROLE_MANAGER_CLASS);
+            if (!invokeRoleBoolean(roleManagerClass, roleManager, "isRoleAvailable", ROLE_HOME)
+                    || !invokeRoleBoolean(roleManagerClass, roleManager, "isRoleHeld", ROLE_HOME)) {
+                return;
+            }
+            requestHomeRoleChange(
+                    context,
+                    roleManagerClass,
+                    roleManager,
+                    false
+            );
+        } catch (Exception e) {
+            AppLogger.w(TAG, "Unable to clear Android 12 HOME role: " + e.getMessage());
         }
-        requestHomeRoleChange(context, roleManager, false);
+    }
+
+    private static boolean invokeRoleBoolean(Class<?> roleManagerClass,
+                                             Object roleManager,
+                                             String methodName,
+                                             String roleName) throws Exception {
+        Method method = roleManagerClass.getMethod(methodName, String.class);
+        Object result = method.invoke(roleManager, roleName);
+        return Boolean.TRUE.equals(result);
     }
 
     /**
-     * Android 12 exposes role-holder mutation as a hidden System API guarded by
-     * MANAGE_ROLE_HOLDERS. The production APK is platform-signed, so invoking it
-     * reflectively keeps the Gradle build on the public SDK while using the proper
-     * system role mechanism instead of the deprecated PackageManager preferred APIs.
+     * Android 12 exposes role-holder mutation as a System API guarded by
+     * MANAGE_ROLE_HOLDERS. Keep the entire RoleManager interaction reflective so
+     * ordinary minSdk-24 Device Owner builds never need to resolve the API-29 class.
      */
     private static boolean requestHomeRoleChange(Context context,
-                                                 RoleManager roleManager,
+                                                 Class<?> roleManagerClass,
+                                                 Object roleManager,
                                                  boolean add) {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicBoolean callbackSuccess = new AtomicBoolean(false);
         try {
             String methodName = add ? "addRoleHolderAsUser" : "removeRoleHolderAsUser";
-            Method method = RoleManager.class.getMethod(
+            Method method = roleManagerClass.getMethod(
                     methodName,
                     String.class,
                     String.class,
@@ -361,7 +397,7 @@ public final class SystemAppController {
             };
             method.invoke(
                     roleManager,
-                    RoleManager.ROLE_HOME,
+                    ROLE_HOME,
                     context.getPackageName(),
                     0,
                     Process.myUserHandle(),
@@ -370,7 +406,12 @@ public final class SystemAppController {
             );
 
             boolean completed = latch.await(HOME_ROLE_CHANGE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            boolean held = roleManager.isRoleHeld(RoleManager.ROLE_HOME);
+            boolean held = invokeRoleBoolean(
+                    roleManagerClass,
+                    roleManager,
+                    "isRoleHeld",
+                    ROLE_HOME
+            );
             boolean finalState = add ? held : !held;
             if (!completed) {
                 AppLogger.w(
