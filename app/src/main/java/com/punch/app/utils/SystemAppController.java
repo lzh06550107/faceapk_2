@@ -334,6 +334,7 @@ public final class SystemAppController {
                 flags |= readStaticInt(clazz, "DISABLE_NOTIFICATION_ALERTS");
                 flags |= readStaticInt(clazz, "DISABLE_HOME");
                 flags |= readStaticInt(clazz, "DISABLE_RECENT");
+                flags |= readStaticInt(clazz, "DISABLE_BACK");
                 flags2 |= readStaticInt(clazz, "DISABLE2_QUICK_SETTINGS");
             }
             Method disable = clazz.getMethod("disable", int.class);
