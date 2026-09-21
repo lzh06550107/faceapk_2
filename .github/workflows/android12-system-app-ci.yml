@@ -54,6 +54,7 @@ jobs:
               "android.permission.READ_PRIVILEGED_PHONE_STATE",
               "android.permission.DISABLE_KEYGUARD",
               "android.permission.START_ACTIVITIES_FROM_BACKGROUND",
+              "android.permission.SUSPEND_APPS",
           ]
           missing = [p for p in required_permissions if p not in manifest]
           if missing:
@@ -76,3 +77,24 @@ jobs:
 
           print("Android 12 system-app contract OK")
           PY
+
+      - name: Parse PowerShell test harness
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              Write-Host "PowerShell syntax errors in $($_.FullName)" -ForegroundColor Red
+              $errors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "PowerShell harness syntax OK"
