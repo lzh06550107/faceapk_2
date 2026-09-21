@@ -16,9 +16,10 @@ public final class ScreenTimeoutPolicyManager {
     }
 
     public static ScreenTimeoutPolicy.ManagementAvailability getAvailability(Context context) {
-        boolean deviceOwner = context != null && KioskManager.isDeviceOwner(context);
+        boolean managedController = context != null
+                && (KioskManager.isSystemAppMode(context) || KioskManager.isDeviceOwner(context));
         return ScreenTimeoutPolicy.getManagementAvailability(
-                deviceOwner,
+                managedController,
                 Build.VERSION.SDK_INT
         );
     }
@@ -98,12 +99,15 @@ public final class ScreenTimeoutPolicyManager {
             return ApplyResult.failure("Device Owner screen settings are unavailable");
         }
 
+        SessionManager session = SessionManager.get();
+        if (KioskManager.isSystemAppMode(context)) {
+            return restoreSystemAppSettings(context, session);
+        }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         ComponentName admin = getAdminComponent(context);
         if (dpm == null) {
             return ApplyResult.failure("DevicePolicyManager unavailable");
         }
-        SessionManager session = SessionManager.get();
         try {
             dpm.setSystemSetting(
                     admin,
@@ -155,12 +159,15 @@ public final class ScreenTimeoutPolicyManager {
             return restoreOriginalSettings(context);
         }
 
+        SessionManager session = SessionManager.get();
+        if (KioskManager.isSystemAppMode(context)) {
+            return applySystemAppPolicy(context, timeoutMs, session);
+        }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         ComponentName admin = getAdminComponent(context);
         if (dpm == null) {
             return ApplyResult.failure("DevicePolicyManager unavailable");
         }
-        SessionManager session = SessionManager.get();
         try {
             if (!captureOriginalSettingsIfNeeded(context, session)) {
                 session.clearOriginalScreenSettings();
@@ -218,6 +225,122 @@ public final class ScreenTimeoutPolicyManager {
         }
     }
 
+    private static ApplyResult applySystemAppPolicy(Context context,
+                                                    long timeoutMs,
+                                                    SessionManager session) {
+        if (!SystemAppController.hasPermission(
+                context,
+                SystemAppController.PERMISSION_WRITE_SECURE_SETTINGS)) {
+            return ApplyResult.failure("WRITE_SECURE_SETTINGS is not granted");
+        }
+        if (!SystemAppController.hasPermission(
+                context,
+                SystemAppController.PERMISSION_WRITE_SETTINGS)) {
+            return ApplyResult.failure("WRITE_SETTINGS is not granted");
+        }
+        try {
+            if (!captureOriginalSettingsIfNeeded(context, session)) {
+                session.clearOriginalScreenSettings();
+                return ApplyResult.failure("Original screen settings could not be saved");
+            }
+            boolean timeoutWritten = Settings.System.putLong(
+                    context.getContentResolver(),
+                    Settings.System.SCREEN_OFF_TIMEOUT,
+                    timeoutMs
+            );
+            boolean stayOnWritten = Settings.Global.putInt(
+                    context.getContentResolver(),
+                    Settings.Global.STAY_ON_WHILE_PLUGGED_IN,
+                    0
+            );
+            if (!timeoutWritten || !stayOnWritten) {
+                return ApplyResult.failure(
+                        "Android rejected system screen settings"
+                                + "; timeoutWritten=" + timeoutWritten
+                                + "; stayOnWritten=" + stayOnWritten
+                );
+            }
+            long appliedTimeoutMs = Settings.System.getLong(
+                    context.getContentResolver(),
+                    Settings.System.SCREEN_OFF_TIMEOUT,
+                    -1L
+            );
+            int appliedStayOn = Settings.Global.getInt(
+                    context.getContentResolver(),
+                    Settings.Global.STAY_ON_WHILE_PLUGGED_IN,
+                    -1
+            );
+            if (appliedTimeoutMs != timeoutMs || appliedStayOn != 0) {
+                return ApplyResult.failure(
+                        "System did not accept screen timeout"
+                                + "; timeoutMs=" + appliedTimeoutMs
+                                + "; stayOnWhilePluggedIn=" + appliedStayOn
+                );
+            }
+            InteractionLogger.logBusiness(
+                    InteractionLogger.GROUP_GENERAL,
+                    "Applied Android 12 system-app screen timeout",
+                    "timeoutMs=" + timeoutMs + "\nstayOnWhilePluggedIn=0"
+            );
+            return ApplyResult.success("Screen timeout applied by Android 12 system app");
+        } catch (RuntimeException e) {
+            return ApplyResult.failure(e.getClass().getSimpleName() + ": " + safeMessage(e));
+        }
+    }
+
+    private static ApplyResult restoreSystemAppSettings(Context context,
+                                                        SessionManager session) {
+        if (!SystemAppController.hasPermission(
+                context,
+                SystemAppController.PERMISSION_WRITE_SECURE_SETTINGS)
+                || !SystemAppController.hasPermission(
+                context,
+                SystemAppController.PERMISSION_WRITE_SETTINGS)) {
+            return ApplyResult.failure("System settings privileges are unavailable");
+        }
+        try {
+            boolean timeoutWritten = Settings.System.putLong(
+                    context.getContentResolver(),
+                    Settings.System.SCREEN_OFF_TIMEOUT,
+                    session.getOriginalScreenTimeoutMs()
+            );
+            boolean stayOnWritten = Settings.Global.putInt(
+                    context.getContentResolver(),
+                    Settings.Global.STAY_ON_WHILE_PLUGGED_IN,
+                    session.getOriginalStayOnWhilePluggedIn()
+            );
+            if (!timeoutWritten || !stayOnWritten) {
+                return ApplyResult.failure("Android rejected original screen settings");
+            }
+            long restoredTimeoutMs = Settings.System.getLong(
+                    context.getContentResolver(),
+                    Settings.System.SCREEN_OFF_TIMEOUT,
+                    -1L
+            );
+            int restoredStayOn = Settings.Global.getInt(
+                    context.getContentResolver(),
+                    Settings.Global.STAY_ON_WHILE_PLUGGED_IN,
+                    -1
+            );
+            if (restoredTimeoutMs != session.getOriginalScreenTimeoutMs()
+                    || restoredStayOn != session.getOriginalStayOnWhilePluggedIn()) {
+                return ApplyResult.failure(
+                        "System did not restore original screen settings"
+                                + "; timeoutMs=" + restoredTimeoutMs
+                                + "; stayOnWhilePluggedIn=" + restoredStayOn
+                );
+            }
+            if (!session.clearOriginalScreenSettings()) {
+                return ApplyResult.failure(
+                        "Original screen settings restored but snapshot cleanup failed"
+                );
+            }
+            return ApplyResult.success("Original screen settings restored by Android 12 system app");
+        } catch (RuntimeException e) {
+            return ApplyResult.failure(e.getClass().getSimpleName() + ": " + safeMessage(e));
+        }
+    }
+
     private static boolean captureOriginalSettingsIfNeeded(Context context,
                                                            SessionManager session) {
         if (session.hasOriginalScreenSettings()) {
@@ -247,7 +370,7 @@ public final class ScreenTimeoutPolicyManager {
     private static String buildUnavailableMessage(
             ScreenTimeoutPolicy.ManagementAvailability availability) {
         if (availability == ScreenTimeoutPolicy.ManagementAvailability.NOT_DEVICE_OWNER) {
-            return "Only Device Owner can configure screen timeout";
+            return "Android 12 platform system app or Device Owner is required";
         }
         return "Screen timeout management requires Android 9 or later";
     }
