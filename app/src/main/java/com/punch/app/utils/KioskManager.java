@@ -332,7 +332,10 @@ public final class KioskManager {
             SessionManager.get().saveKioskEnabled(false);
             cancelPendingAppTaskRestore();
             OWNER_POLICY_GATE.invalidate();
-            return SystemAppController.clearKioskPolicies(context);
+            boolean policiesCleared = SystemAppController.clearKioskPolicies(context);
+            boolean testPackagesReady =
+                    SystemAppController.prepareTestPackages(context, testPackages);
+            return policiesCleared && testPackagesReady;
         }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         ComponentName admin = getAdminComponent(context);
@@ -392,12 +395,18 @@ public final class KioskManager {
             return false;
         }
         if (SystemAppController.isPlatformSystemApp(context)) {
+            boolean testPackagesRestored =
+                    SystemAppController.restoreTestPackages(context, testPackages);
             SessionManager.get().saveKioskEnabled(true);
             setDeviceTestMaintenanceModeForTest(false);
             OWNER_POLICY_GATE.invalidate();
             boolean applied = SystemAppController.applyKioskPolicies(context);
-            AppLogger.i(TAG, "Restored Android 12 system-app kiosk after test maintenance=" + applied);
-            return applied;
+            boolean restored = testPackagesRestored && applied;
+            AppLogger.i(
+                    TAG,
+                    "Restored Android 12 system-app kiosk after test maintenance=" + restored
+            );
+            return restored;
         }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         ComponentName admin = getAdminComponent(context);
