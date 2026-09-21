@@ -175,6 +175,10 @@ public final class KioskManager {
         return SystemAppController.canManageSystemSettings(context) || isDeviceOwner(context);
     }
 
+    public static boolean canManageScreenSettings(Context context) {
+        return SystemAppController.canManageScreenSettings(context) || isDeviceOwner(context);
+    }
+
     public static boolean canInstallSilently(Context context) {
         return SystemAppController.canInstallPackages(context) || isDeviceOwner(context);
     }
