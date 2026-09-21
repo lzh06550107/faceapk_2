@@ -63,7 +63,9 @@ system-app/product-packages.mk.example
 
 ## 6. Platform 签名
 
-Gradle 项目不保存 ROM platform 私钥。Release APK 构建后使用 Android SDK `apksigner` 和 ROM 的 `platform.pk8`、`platform.x509.pem` 签名。仓库提供 `scripts/sign-platform-apk.ps1`。
+正式 ROM 集成优先走上一节的 Soong 路径：Gradle 产出 unsigned release APK，由 `android_app_import { certificate: "platform" }` 在 AOSP 构建阶段完成 platform 签名，**不要再对同一产物额外执行一次 apksigner**。
+
+仓库中的 `scripts/sign-platform-apk.ps1` 仅用于工程验证场景，例如已有 system-image 基线、需要临时生成同 platform certificate 的 updated-system-app APK 做 OTA/覆盖安装测试。platform 私钥不得提交到本仓库。
 
 ## 7. Kiosk 对应关系
 
