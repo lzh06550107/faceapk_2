@@ -35,7 +35,7 @@ App 只在以下条件全部满足时启用 System App backend：Android API 31 
 
 ## 4. Manifest 权限
 
-主 Manifest 已声明生产所需权限：`WRITE_SECURE_SETTINGS`、`WRITE_SETTINGS`、`STATUS_BAR`、`INSTALL_PACKAGES`、`MANAGE_USERS`、`SET_PREFERRED_APPLICATIONS`、`GRANT_RUNTIME_PERMISSIONS`、`READ_PRIVILEGED_PHONE_STATE`、`DISABLE_KEYGUARD`、`START_ACTIVITIES_FROM_BACKGROUND`。
+主 Manifest 已声明生产所需权限：`WRITE_SECURE_SETTINGS`、`WRITE_SETTINGS`、`STATUS_BAR`、`INSTALL_PACKAGES`、`MANAGE_USERS`、`MANAGE_ROLE_HOLDERS`、`GRANT_RUNTIME_PERMISSIONS`、`READ_PRIVILEGED_PHONE_STATE`、`DISABLE_KEYGUARD`、`START_ACTIVITIES_FROM_BACKGROUND`。
 
 ## 5. ROM allowlist
 
@@ -67,7 +67,7 @@ Gradle 项目不保存 ROM platform 私钥。Release APK 构建后使用 Android
 
 ## 7. Kiosk 对应关系
 
-原 Device Owner 路径使用 `setLockTaskPackages/startLockTask/addPersistentPreferredActivity/addUserRestriction/setKeyguardDisabled/setPermissionGrantState`。Android 12 System App 路径使用 `STATUS_BAR` 隐藏 API、PackageManager preferred HOME、`UserManager.setUserRestriction`、`DISABLE_KEYGUARD`、`GRANT_RUNTIME_PERMISSIONS` 与 Activity immersive navigation。Device Owner 后端继续保留作开发/兼容回退。
+原 Device Owner 路径使用 `setLockTaskPackages/startLockTask/addPersistentPreferredActivity/addUserRestriction/setKeyguardDisabled/setPermissionGrantState`。Android 12 System App 路径使用 `STATUS_BAR` 隐藏 API、RoleManager `ROLE_HOME` System API、`UserManager.setUserRestriction`、`DISABLE_KEYGUARD`、`GRANT_RUNTIME_PERMISSIONS` 与 Activity immersive navigation。Device Owner 后端继续保留作开发/兼容回退。
 
 ## 8. NTP
 
