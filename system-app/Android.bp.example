@@ -1,0 +1,21 @@
+// Example to copy into the Android 12 ROM source tree.
+// Place the Gradle-built unsigned APK next to this file as FaceAPK-unsigned.apk.
+android_app_import {
+    name: "FaceAPK",
+    apk: "FaceAPK-unsigned.apk",
+    certificate: "platform",
+    privileged: true,
+    dex_preopt: {
+        enabled: false,
+    },
+    required: [
+        "privapp_permissions_com_punch_app",
+    ],
+}
+
+prebuilt_etc {
+    name: "privapp_permissions_com_punch_app",
+    src: "privapp-permissions-com.punch.app.xml",
+    filename: "privapp-permissions-com.punch.app.xml",
+    sub_dir: "permissions",
+}
