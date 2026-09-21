@@ -884,8 +884,13 @@ public class AdvancedConfigFragment extends Fragment {
             return;
         }
         if (SessionManager.get().isKioskEnabled()) {
-            if (KioskManager.isDeviceOwner(requireContext())) {
-                Toast.makeText(requireContext(), "Device Owner 模式下不能退出 Kiosk，请先解除 Device Owner", Toast.LENGTH_LONG).show();
+            if (KioskManager.isManagedDevice(requireContext())) {
+                Toast.makeText(
+                        requireContext(),
+                        KioskManager.managementModeLabel(requireContext())
+                                + " 生产管理模式下不能直接退出 Kiosk",
+                        Toast.LENGTH_LONG
+                ).show();
                 KioskManager.enableAndEnter(requireActivity());
                 updateKioskButtonState();
                 return;
@@ -921,6 +926,12 @@ public class AdvancedConfigFragment extends Fragment {
             btnClearDeviceOwner.setText("正在解除 Device Owner...");
             return;
         }
+        if (KioskManager.isSystemAppMode(requireContext())) {
+            btnClearDeviceOwner.setEnabled(false);
+            btnClearDeviceOwner.setAlpha(0.6f);
+            btnClearDeviceOwner.setText("Android 12 System App（无需 Device Owner）");
+            return;
+        }
         boolean isDeviceOwner = KioskManager.isDeviceOwner(requireContext());
         btnClearDeviceOwner.setEnabled(isDeviceOwner);
         btnClearDeviceOwner.setAlpha(isDeviceOwner ? 1f : 0.6f);
@@ -928,6 +939,14 @@ public class AdvancedConfigFragment extends Fragment {
     }
 
     private void confirmClearDeviceOwner() {
+        if (KioskManager.isSystemAppMode(requireContext())) {
+            Toast.makeText(
+                    requireContext(),
+                    "Android 12 System App 模式不依赖 Device Owner；系统预装应用不能通过此按钮解除",
+                    Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
         if (!KioskManager.isDeviceOwner(requireContext())) {
             Toast.makeText(requireContext(), "当前应用不是 Device Owner", Toast.LENGTH_SHORT).show();
             return;
@@ -1152,7 +1171,7 @@ public class AdvancedConfigFragment extends Fragment {
         } else if (availability
                 == ScreenTimeoutPolicy.ManagementAvailability.NOT_DEVICE_OWNER) {
             tvScreenTimeoutStatus.setText(
-                    "\u4ec5 Device Owner \u6a21\u5f0f\u53ef\u914d\u7f6e"
+                    "需要 Android 12 platform system app 或 Device Owner"
             );
         } else {
             tvScreenTimeoutStatus.setText(
