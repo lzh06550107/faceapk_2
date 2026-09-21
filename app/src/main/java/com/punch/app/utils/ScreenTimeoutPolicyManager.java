@@ -67,11 +67,15 @@ public final class ScreenTimeoutPolicyManager {
         return result;
     }
 
-    public static void applyConfiguredPolicy(Context context) {
-        if (context == null
-                || getAvailability(context)
+    public static ApplyResult applyConfiguredPolicy(Context context) {
+        if (context == null) {
+            return ApplyResult.failure("Context unavailable");
+        }
+        if (getAvailability(context)
                 != ScreenTimeoutPolicy.ManagementAvailability.AVAILABLE) {
-            return;
+            return ApplyResult.failure(
+                    buildUnavailableMessage(getAvailability(context))
+            );
         }
         long timeoutMs = SessionManager.get().getScreenTimeoutMs();
         ApplyResult result = applySystemPolicy(context, timeoutMs);
@@ -82,6 +86,7 @@ public final class ScreenTimeoutPolicyManager {
                     result.message
             );
         }
+        return result;
     }
 
     public static ApplyResult restoreOriginalSettings(Context context) {
