@@ -130,3 +130,31 @@ scripts\verify-system-app-device.ps1
 ```
 
 脚本检查通过只是静态/系统状态门禁；第 4、8、10、11、12、13、14 项仍必须在实际 Android 12 ROM 真机上验收。
+
+## 16. System App 真机自动化测试
+
+原有 `deviceOwnerTest` maintenance bridge 继续复用，但现在同时支持 Android 12 System App：
+
+- preflight 会识别 `ROLE_HOME` 与 system/updated-system-app 状态，不再只依赖 Device Owner / LockTask；
+- maintenance 进入时会解除 System App Kiosk，并对 Smoke 包执行 unhide / unsuspend；
+- maintenance 退出时重新 suspend 测试包并恢复 HOME/Kiosk；
+- 因生产 `com.punch.app` 使用 platform certificate，临时 maintenance APK 必须使用相同 platform certificate 原地覆盖；
+- platform 私钥只通过本机命令参数传入，不写入 Gradle 配置、不提交仓库。
+
+示例：
+
+```powershell
+.\scripts\run-device-tests.ps1 `
+  -Serial <device-serial> `
+  -UseDeviceOwnerMaintenanceBridge `
+  -PlatformPk8 D:\android-keys\platform.pk8 `
+  -PlatformX509Pem D:\android-keys\platform.x509.pem
+```
+
+如果 `apksigner.bat` 无法从 `ANDROID_HOME\build-tools` 自动找到，可额外传：
+
+```powershell
+-ApkSigner D:\Android\Sdk\build-tools\<version>\apksigner.bat
+```
+
+`-UseDeviceOwnerMaintenanceBridge` 是为兼容现有测试脚本保留的历史参数名；在本分支中它实际表示“managed-device maintenance bridge”，同时覆盖 Device Owner 与 Android 12 System App。
