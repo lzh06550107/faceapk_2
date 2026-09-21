@@ -101,12 +101,12 @@ public final class UpdateManager {
             log("Auto update skipped", "reason=install_pending\ntrigger=" + safe(reason));
             return;
         }
-        if (!KioskManager.isDeviceOwner(context)) {
-            clearDurableRetry(context, "device_not_owner");
+        if (!KioskManager.canInstallSilently(context)) {
+            clearDurableRetry(context, "silent_install_unavailable");
             logFailure(
                     "Auto update skipped",
-                    "reason=device_not_owner\n"
-                            + "message=后台静默安装要求应用是 Device Owner\n"
+                    "reason=silent_install_unavailable\n"
+                            + "message=后台静默安装要求 Android 12 platform system app 的 INSTALL_PACKAGES 权限，或 Device Owner\n"
                             + "trigger=" + safe(reason)
             );
             return;
@@ -227,7 +227,7 @@ public final class UpdateManager {
                         + "\nsize=" + validation.fileSize
                         + "\napkPath=" + safe(apkPath));
 
-        if (KioskManager.isDeviceOwner(activity)) {
+        if (KioskManager.canInstallSilently(activity)) {
             if (SessionManager.get().isKioskEnabled()) {
                 KioskManager.ensureOwnerKioskPolicies(activity);
             }
@@ -282,7 +282,7 @@ public final class UpdateManager {
                     status
             );
             clearDurableRetry(context, "install_success");
-            log("Device Owner install succeeded",
+            log("Privileged install succeeded",
                     "sessionId=" + sessionId + "\nversion=" + safe(version));
             return;
         }
@@ -294,7 +294,7 @@ public final class UpdateManager {
                     status
             );
             clearDurableRetry(context, "installer_requires_user_action");
-            logFailure("Device Owner install requires user action",
+            logFailure("Privileged install requires user action",
                     "sessionId=" + sessionId + "\nmessage=" + safe(statusMessage));
             return;
         }
@@ -305,7 +305,7 @@ public final class UpdateManager {
                 message,
                 status
         );
-        logFailure("Device Owner install failed",
+        logFailure("Privileged install failed",
                 "sessionId=" + sessionId
                         + "\nstatus=" + status
                         + "\nmessage=" + safe(statusMessage));
@@ -528,11 +528,11 @@ public final class UpdateManager {
                     PendingIntent.FLAG_UPDATE_CURRENT | mutableFlag()
             );
             session.commit(pendingIntent.getIntentSender());
-            log("Device Owner install session committed",
+            log("Privileged install session committed",
                     "sessionId=" + sessionId
                             + "\nversionName=" + safe(validation.versionName)
                             + "\nversionCode=" + validation.versionCode);
-            return StartResult.ok("Background install submitted", true);
+            return StartResult.ok("Privileged background install submitted", true);
         } catch (Exception e) {
             if (sessionId >= 0) {
                 try {
@@ -543,7 +543,7 @@ public final class UpdateManager {
             String message = "Install submit failed: " + e.getClass().getSimpleName()
                     + ": " + safe(e.getMessage());
             markFailed(message, Integer.MIN_VALUE);
-            logFailure("Device Owner install submit failed", message);
+            logFailure("Privileged install submit failed", message);
             return StartResult.fail(message);
         } finally {
             if (session != null) {

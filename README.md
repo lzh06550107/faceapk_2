@@ -154,9 +154,24 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ## 安装
 
-```bash
-adb install -r D:\code\faceapk\app\release\app-release.apk && adb shell dpm set-device-owner com.punch.app/.receiver.KioskDeviceAdminReceiver
+### Android 12 生产 System App
+
+本分支生产部署不再要求 Device Owner，也不再要求手工 `pm grant WRITE_SECURE_SETTINGS`。
+
+目标 ROM 集成：
+
+```text
+/system/priv-app/FaceAPK/FaceAPK.apk
+/system/etc/permissions/privapp-permissions-com.punch.app.xml
 ```
+
+APK 必须使用 ROM platform certificate 签名。详见：
+
+```text
+docs/ANDROID12-SYSTEM-APP.md
+```
+
+普通开发机仍可使用原 Device Owner 流程做兼容测试，但该流程不再是 Android 12 生产部署要求。
 
 当前需要设置打卡时间范围，即在班次的上下班时间点前后设置一定的时间，可以用来计算打卡时间，比如：如果你把 “打卡间隔” 设置为 20 分钟，则
 
@@ -189,5 +204,7 @@ adb install -r -t app-debug.apk&&adb shell dpm remove-active-admin com.punch.app
 &&adb uninstall com.punch.app
 
 
-卸载后重装后重新授权命令：
-adb install -r app-release.apk && adb shell dpm set-device-owner com.punch.app/.receiver.KioskDeviceAdminReceiver && adb shell pm grant com.punch.app android.permission.WRITE_SECURE_SETTINGS
+开发机 Device Owner 回退测试（非生产 System App 部署）：
+adb install -r app-release.apk && adb shell dpm set-device-owner com.punch.app/.receiver.KioskDeviceAdminReceiver
+
+Android 12 生产 System App 不执行上述 Device Owner 命令，也不执行 pm grant WRITE_SECURE_SETTINGS。

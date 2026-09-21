@@ -21,6 +21,7 @@ import com.punch.app.service.SyncCoordinator;
 import com.punch.app.utils.AppLogger;
 import com.punch.app.utils.KioskManager;
 import com.punch.app.utils.SessionManager;
+import com.punch.app.utils.SystemAppController;
 import com.punch.app.utils.UpdateManager;
 import com.punch.app.receiver.UpdateRetryReceiver;
 
@@ -144,7 +145,15 @@ public class PunchApplication extends Application {
         });
 
         SessionManager.get().init(this);
-        if (KioskManager.isDeviceOwner(this)) {
+        if (KioskManager.isSystemAppMode(this)
+                && !SystemAppController.hasAllProductionPrivileges(this)) {
+            AppLogger.e(
+                    TAG,
+                    "Android 12 system app privilege audit failed: "
+                            + SystemAppController.describeMissingProductionPrivileges(this)
+            );
+        }
+        if (KioskManager.isManagedDevice(this)) {
             SessionManager.get().saveKioskEnabled(true);
             KioskManager.ensureOwnerKioskPolicies(this);
             startKioskForegroundWatchdog();
@@ -203,7 +212,7 @@ public class PunchApplication extends Application {
         public void run() {
             if (KioskManager.isDeviceTestMaintenanceModeForTest()
                     || !SessionManager.get().isKioskEnabled()
-                    || !KioskManager.isDeviceOwner(PunchApplication.this)) {
+                    || !KioskManager.isManagedDevice(PunchApplication.this)) {
                 kioskForegroundWatchdogRunning = false;
                 return;
             }

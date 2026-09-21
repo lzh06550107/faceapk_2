@@ -23,6 +23,7 @@ import com.punch.app.receiver.UpdateInstallStateReceiver;
 import com.punch.app.utils.KioskManager;
 import com.punch.app.utils.NtpProbeClient;
 import com.punch.app.utils.SessionManager;
+import com.punch.app.utils.SystemAppController;
 import com.punch.app.utils.SystemNtpConfigurator;
 import com.punch.app.utils.SystemNtpPolicy;
 import com.punch.app.utils.WifiConfigDialogHelper;
@@ -137,6 +138,20 @@ public class SetupWizardActivity extends AppCompatActivity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int requestCode,
+                                           String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (wifiConfigDialogHelper != null) {
+            wifiConfigDialogHelper.onRequestPermissionsResult(
+                    requestCode,
+                    permissions,
+                    grantResults
+            );
+        }
+    }
+
+    @Override
     protected void onDestroy() {
         destroyed = true;
         ntpOperationGeneration.incrementAndGet();
@@ -218,13 +233,25 @@ public class SetupWizardActivity extends AppCompatActivity {
 
     private void refreshNtpState(boolean initializeInput) {
         ntpAvailability = SystemNtpConfigurator.getAvailability(this);
+        boolean systemAppMode = KioskManager.isSystemAppMode(this);
         boolean deviceOwner = KioskManager.isDeviceOwner(this);
         boolean writePermission = SystemNtpConfigurator.hasWritePermission(this);
         String currentServer = SystemNtpConfigurator.getCurrentServer(this);
 
+        String missingSystemPrivileges = systemAppMode
+                ? SystemAppController.describeMissingProductionPrivileges(this)
+                : "";
         tvNtpCapability.setText(
-                "Device Owner：" + (deviceOwner ? "✓" : "✗")
+                "设备管理模式：" + KioskManager.managementModeLabel(this)
+                        + "\nAndroid 12 System App：" + (systemAppMode ? "✓" : "✗")
+                        + "\nDevice Owner 回退：" + (deviceOwner ? "✓" : "✗")
                         + "\n系统 NTP 写权限：" + (writePermission ? "✓" : "✗")
+                        + (systemAppMode
+                        ? "\nSystem App 权限自检："
+                        + (missingSystemPrivileges.isEmpty()
+                        ? "✓"
+                        : "缺失 " + missingSystemPrivileges)
+                        : "")
         );
         tvNtpCurrentServer.setText(
                 currentServer.isEmpty() ? "当前系统 NTP：未配置" : "当前系统 NTP：" + currentServer
@@ -378,13 +405,13 @@ public class SetupWizardActivity extends AppCompatActivity {
 
     private String unavailableNtpMessage(SystemNtpPolicy.ManagementAvailability availability) {
         if (availability == SystemNtpPolicy.ManagementAvailability.UNSUPPORTED_ANDROID_VERSION) {
-            return "当前 Android 版本不支持 Device Owner 管理自动时间。";
+            return "当前 Android 版本不支持此系统时间管理方案。";
         }
         if (availability == SystemNtpPolicy.ManagementAvailability.NOT_DEVICE_OWNER) {
-            return "当前 App 不是 Device Owner，无法应用系统时间策略。";
+            return "当前 App 既不是 Android 12 platform system app，也不是 Device Owner，无法应用系统时间策略。";
         }
         if (availability == SystemNtpPolicy.ManagementAvailability.WRITE_PERMISSION_MISSING) {
-            return "WRITE_SECURE_SETTINGS 未授权。请先完成设备初始化授权：pm grant com.punch.app android.permission.WRITE_SECURE_SETTINGS";
+            return "WRITE_SECURE_SETTINGS 未授权。System App 版本请检查 platform 签名、Manifest 权限和 ROM privileged-permission 配置。";
         }
         return "系统 NTP 管理能力不可用。";
     }

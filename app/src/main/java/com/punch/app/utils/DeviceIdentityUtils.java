@@ -2,7 +2,6 @@ package com.punch.app.utils;
 
 import android.annotation.SuppressLint;
 import android.Manifest;
-import android.app.admin.DevicePolicyManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -72,14 +71,18 @@ public final class DeviceIdentityUtils {
 
     @SuppressLint("HardwareIds")
     private static String buildDebugDetail(Context context, String reason) {
+        boolean managedDevice = false;
+        boolean systemAppMode = false;
         boolean deviceOwner = false;
         boolean readPhoneStateGranted = false;
         String packageName = "";
+        String managementMode = "Unmanaged";
         if (context != null) {
             packageName = context.getPackageName();
-            DevicePolicyManager dpm =
-                    (DevicePolicyManager) context.getSystemService(Context.DEVICE_POLICY_SERVICE);
-            deviceOwner = dpm != null && dpm.isDeviceOwnerApp(packageName);
+            managedDevice = KioskManager.isManagedDevice(context);
+            systemAppMode = KioskManager.isSystemAppMode(context);
+            deviceOwner = KioskManager.isDeviceOwner(context);
+            managementMode = KioskManager.managementModeLabel(context);
             readPhoneStateGranted = ContextCompat.checkSelfPermission(
                     context,
                     Manifest.permission.READ_PHONE_STATE
@@ -88,6 +91,9 @@ public final class DeviceIdentityUtils {
         return "reason=" + (reason == null ? "" : reason)
                 + "\npackage=" + packageName
                 + "\nsdk=" + Build.VERSION.SDK_INT
+                + "\nmanagementMode=" + managementMode
+                + "\nmanagedDevice=" + managedDevice
+                + "\nsystemAppMode=" + systemAppMode
                 + "\ndeviceOwner=" + deviceOwner
                 + "\nreadPhoneStateGranted=" + readPhoneStateGranted
                 + "\nbuildSerialField=" + String.valueOf(Build.SERIAL);

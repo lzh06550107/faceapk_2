@@ -6,14 +6,14 @@ public final class KioskRestorePolicy {
 
     public static boolean shouldRestore(
             boolean kioskEnabled,
-            boolean deviceOwner,
+            boolean managedDevice,
             boolean screenInteractive,
             boolean keyguardLocked,
             boolean changingConfigurations,
             int resumedActivityCount
     ) {
         return kioskEnabled
-                && deviceOwner
+                && managedDevice
                 && screenInteractive
                 && !keyguardLocked
                 && !changingConfigurations

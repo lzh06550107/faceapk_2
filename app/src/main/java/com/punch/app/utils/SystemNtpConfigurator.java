@@ -27,7 +27,7 @@ public final class SystemNtpConfigurator {
                 PERMISSION_WRITE_SECURE_SETTINGS
         ) == PackageManager.PERMISSION_GRANTED;
         return SystemNtpPolicy.getAvailability(
-                KioskManager.isDeviceOwner(context),
+                KioskManager.canManageSystemSettings(context),
                 writePermissionGranted,
                 Build.VERSION.SDK_INT
         );
@@ -68,6 +68,18 @@ public final class SystemNtpConfigurator {
             return ApplyResult.failure(buildUnavailableMessage(availability), host, false);
         }
 
+        if (KioskManager.isSystemAppMode(context)) {
+            try {
+                return applySystemAppWithSnapshot(context, host);
+            } catch (RuntimeException e) {
+                return ApplyResult.failure(
+                        e.getClass().getSimpleName() + ": " + safeMessage(e),
+                        getCurrentServer(context),
+                        false
+                );
+            }
+        }
+
         DevicePolicyManager dpm = (DevicePolicyManager) context.getSystemService(
                 Context.DEVICE_POLICY_SERVICE
         );
@@ -85,6 +97,135 @@ public final class SystemNtpConfigurator {
                     false
             );
         }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static ApplyResult applySystemAppWithSnapshot(Context context, String host) {
+        String previousServer = Settings.Global.getString(
+                context.getContentResolver(),
+                KEY_NTP_SERVER
+        );
+        boolean previousAutoTime = Settings.Global.getInt(
+                context.getContentResolver(),
+                Settings.Global.AUTO_TIME,
+                0
+        ) == 1;
+        UserManager userManager =
+                (UserManager) context.getSystemService(Context.USER_SERVICE);
+        if (userManager == null) {
+            return ApplyResult.failure("UserManager unavailable", host, false);
+        }
+        boolean previousDateTimeRestriction =
+                userManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_DATE_TIME);
+        boolean serverChanged = !host.equals(SystemNtpPolicy.normalizeHost(previousServer));
+
+        try {
+            boolean serverWritten = Settings.Global.putString(
+                    context.getContentResolver(),
+                    KEY_NTP_SERVER,
+                    host
+            );
+            boolean autoTimeWritten = Settings.Global.putInt(
+                    context.getContentResolver(),
+                    Settings.Global.AUTO_TIME,
+                    1
+            );
+            userManager.setUserRestriction(UserManager.DISALLOW_CONFIG_DATE_TIME, true);
+            if (!serverWritten || !autoTimeWritten) {
+                boolean rollback = rollbackSystemApp(
+                        context,
+                        userManager,
+                        previousServer,
+                        previousAutoTime,
+                        previousDateTimeRestriction
+                );
+                return ApplyResult.failure(
+                        "Android rejected NTP/auto-time settings; rollback=" + rollback,
+                        getCurrentServer(context),
+                        rollback
+                );
+            }
+
+            String verifiedServer = getCurrentServer(context);
+            boolean autoTimeEnabled = Settings.Global.getInt(
+                    context.getContentResolver(),
+                    Settings.Global.AUTO_TIME,
+                    0
+            ) == 1;
+            boolean dateTimeRestricted =
+                    userManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_DATE_TIME);
+            if (!host.equals(verifiedServer) || !autoTimeEnabled || !dateTimeRestricted) {
+                boolean rollback = rollbackSystemApp(
+                        context,
+                        userManager,
+                        previousServer,
+                        previousAutoTime,
+                        previousDateTimeRestriction
+                );
+                return ApplyResult.failure(
+                        "System NTP policy verification failed; rollback=" + rollback,
+                        verifiedServer,
+                        rollback
+                );
+            }
+
+            return ApplyResult.success(
+                    host,
+                    serverChanged
+                            ? "System NTP configuration applied by Android 12 system app"
+                            : "System NTP configuration verified by Android 12 system app"
+            );
+        } catch (RuntimeException e) {
+            boolean rollback = rollbackSystemApp(
+                    context,
+                    userManager,
+                    previousServer,
+                    previousAutoTime,
+                    previousDateTimeRestriction
+            );
+            return ApplyResult.failure(
+                    e.getClass().getSimpleName() + ": " + safeMessage(e)
+                            + "; rollback=" + rollback,
+                    getCurrentServer(context),
+                    rollback
+            );
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean rollbackSystemApp(Context context,
+                                             UserManager userManager,
+                                             String previousServer,
+                                             boolean previousAutoTime,
+                                             boolean previousDateTimeRestriction) {
+        boolean success = true;
+        try {
+            success &= Settings.Global.putString(
+                    context.getContentResolver(),
+                    KEY_NTP_SERVER,
+                    previousServer
+            );
+        } catch (RuntimeException ignored) {
+            success = false;
+        }
+        try {
+            success &= Settings.Global.putInt(
+                    context.getContentResolver(),
+                    Settings.Global.AUTO_TIME,
+                    previousAutoTime ? 1 : 0
+            );
+        } catch (RuntimeException ignored) {
+            success = false;
+        }
+        try {
+            userManager.setUserRestriction(
+                    UserManager.DISALLOW_CONFIG_DATE_TIME,
+                    previousDateTimeRestriction
+            );
+        } catch (RuntimeException ignored) {
+            success = false;
+        }
+        return success;
     }
 
     private static ApplyResult applyWithSnapshot(Context context,
@@ -222,7 +363,7 @@ public final class SystemNtpConfigurator {
             return "System NTP management requires Android 11 or later";
         }
         if (availability == SystemNtpPolicy.ManagementAvailability.NOT_DEVICE_OWNER) {
-            return "App is not Device Owner";
+            return "Android 12 platform system app or Device Owner is required";
         }
         if (availability == SystemNtpPolicy.ManagementAvailability.WRITE_PERMISSION_MISSING) {
             return "WRITE_SECURE_SETTINGS is not granted";

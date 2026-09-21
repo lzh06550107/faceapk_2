@@ -1,0 +1,103 @@
+name: Android 12 System App CI
+
+on:
+  push:
+    branches:
+      - feature/android12-system-app
+  pull_request:
+    branches:
+      - "运行性能问题查找前"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Assemble release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Assemble managed-device test APKs
+        run: ./gradlew assembleDeviceOwnerTest assembleSmoke assembleSmokeAndroidTest --stacktrace
+
+      - name: Validate system-app contract
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          manifest_path = Path("app/src/main/AndroidManifest.xml")
+          manifest = manifest_path.read_text(encoding="utf-8")
+          required_permissions = [
+              "android.permission.WRITE_SECURE_SETTINGS",
+              "android.permission.WRITE_SETTINGS",
+              "android.permission.STATUS_BAR",
+              "android.permission.INSTALL_PACKAGES",
+              "android.permission.MANAGE_USERS",
+              "android.permission.MANAGE_ROLE_HOLDERS",
+              "android.permission.GRANT_RUNTIME_PERMISSIONS",
+              "android.permission.READ_PRIVILEGED_PHONE_STATE",
+              "android.permission.DISABLE_KEYGUARD",
+              "android.permission.START_ACTIVITIES_FROM_BACKGROUND",
+              "android.permission.SUSPEND_APPS",
+          ]
+          missing = [p for p in required_permissions if p not in manifest]
+          if missing:
+              raise SystemExit(f"Manifest missing system-app permissions: {missing}")
+          if "android:sharedUserId" in manifest:
+              raise SystemExit("System App contract forbids android:sharedUserId")
+          if 'android:persistent="true"' not in manifest:
+              raise SystemExit("System App contract requires android:persistent=true")
+
+          xml_path = Path("system-app/privapp-permissions-com.punch.app.xml")
+          root = ET.parse(xml_path).getroot()
+          packages = root.findall("privapp-permissions")
+          if not any(x.attrib.get("package") == "com.punch.app" for x in packages):
+              raise SystemExit("privapp allowlist package mismatch")
+
+          bp = Path("system-app/Android.bp.example").read_text(encoding="utf-8")
+          for token in ['certificate: "platform"', "privileged: true"]:
+              if token not in bp:
+                  raise SystemExit(f"Android.bp missing: {token}")
+
+          print("Android 12 system-app contract OK")
+          PY
+
+      - name: Parse PowerShell test harness
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              Write-Host "PowerShell syntax errors in $($_.FullName)" -ForegroundColor Red
+              $errors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "PowerShell harness syntax OK"

@@ -50,15 +50,20 @@ public final class KioskManager {
         if (activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
-        if (isDeviceOwner(activity) && !SessionManager.get().isKioskEnabled()) {
+        if (isManagedDevice(activity) && !SessionManager.get().isKioskEnabled()) {
             SessionManager.get().saveKioskEnabled(true);
-            AppLogger.i(TAG, "Device owner detected, force kiosk enabled");
+            AppLogger.i(TAG, "Managed device detected, force kiosk enabled: " + managementModeLabel(activity));
         }
         if (!SessionManager.get().isKioskEnabled()) {
             AppLogger.i(TAG, "Kiosk disabled, skip enter");
             return;
         }
         ensureOwnerKioskPolicies(activity);
+        if (isSystemAppMode(activity)) {
+            SystemAppController.applyActivityKioskUi(activity);
+            scheduleEnterRetryIfNeeded(activity, attempt);
+            return;
+        }
         if (!isLockTaskPermitted(activity)) {
             AppLogger.w(TAG, "Lock task not permitted for package " + activity.getPackageName());
             scheduleEnterRetryIfNeeded(activity, attempt);
@@ -96,11 +101,29 @@ public final class KioskManager {
         if (activity == null) {
             return false;
         }
+        if (isSystemAppMode(activity) && !allowDeviceOwnerExit) {
+            SessionManager.get().saveKioskEnabled(true);
+            AppLogger.w(TAG, "Android 12 system app cannot exit production kiosk mode");
+            enterIfPossible(activity);
+            return false;
+        }
         if (isDeviceOwner(activity) && !allowDeviceOwnerExit) {
             SessionManager.get().saveKioskEnabled(true);
             AppLogger.w(TAG, "Device owner cannot exit kiosk without owner removal");
             enterIfPossible(activity);
             return false;
+        }
+        if (isSystemAppMode(activity) && allowDeviceOwnerExit) {
+            ScreenTimeoutPolicyManager.ApplyResult restoreResult =
+                    ScreenTimeoutPolicyManager.restoreOriginalSettings(activity);
+            if (!restoreResult.success) {
+                AppLogger.w(TAG, "Failed to restore screen settings: " + restoreResult.message);
+                return false;
+            }
+            SessionManager.get().saveKioskEnabled(false);
+            SystemAppController.clearKioskPolicies(activity);
+            SystemAppController.clearActivityKioskUi(activity);
+            return true;
         }
         if (allowDeviceOwnerExit && isDeviceOwner(activity)) {
             ScreenTimeoutPolicyManager.ApplyResult restoreResult =
@@ -141,15 +164,52 @@ public final class KioskManager {
         return dpm != null && dpm.isDeviceOwnerApp(context.getPackageName());
     }
 
+    public static boolean isSystemAppMode(Context context) {
+        return !uiTestBypassEnabled && SystemAppController.isPlatformSystemApp(context);
+    }
+
+    public static boolean isManagedDevice(Context context) {
+        return isSystemAppMode(context) || isDeviceOwner(context);
+    }
+
+    public static boolean canManageSystemSettings(Context context) {
+        return SystemAppController.canManageSystemSettings(context) || isDeviceOwner(context);
+    }
+
+    public static boolean canManageScreenSettings(Context context) {
+        return SystemAppController.canManageScreenSettings(context) || isDeviceOwner(context);
+    }
+
+    public static boolean canInstallSilently(Context context) {
+        return SystemAppController.canInstallPackages(context) || isDeviceOwner(context);
+    }
+
+    public static String managementModeLabel(Context context) {
+        if (isSystemAppMode(context)) {
+            return "Android 12 System App";
+        }
+        if (isDeviceOwner(context)) {
+            return "Device Owner";
+        }
+        return "Unmanaged";
+    }
+
     public static boolean isLockTaskPermitted(Context context) {
         if (uiTestBypassEnabled) {
             return false;
+        }
+        if (isSystemAppMode(context)) {
+            return true;
         }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         return dpm != null && dpm.isLockTaskPermitted(context.getPackageName());
     }
 
     public static boolean isInLockedTaskMode(Context context) {
+        if (isSystemAppMode(context)) {
+            return SessionManager.get().isKioskEnabled()
+                    && SystemAppController.isKioskPoliciesApplied();
+        }
         return getLockTaskModeState(context) == ActivityManager.LOCK_TASK_MODE_LOCKED;
     }
 
@@ -167,6 +227,10 @@ public final class KioskManager {
 
     public static void ensureOwnerRuntimePermissions(Context context) {
         if (uiTestBypassEnabled) {
+            return;
+        }
+        if (isSystemAppMode(context)) {
+            SystemAppController.ensureRuntimePermissions(context);
             return;
         }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
@@ -188,6 +252,18 @@ public final class KioskManager {
 
     public static void ensureOwnerKioskPolicies(Context context) {
         if (uiTestBypassEnabled || deviceTestMaintenanceModeEnabled) {
+            return;
+        }
+        if (isSystemAppMode(context)) {
+            if (!OWNER_POLICY_GATE.tryBegin()) {
+                return;
+            }
+            boolean applied = false;
+            try {
+                applied = SystemAppController.applyKioskPolicies(context);
+            } finally {
+                OWNER_POLICY_GATE.finish(applied);
+            }
             return;
         }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
@@ -251,6 +327,16 @@ public final class KioskManager {
         if (context == null) {
             return false;
         }
+        if (isSystemAppMode(context)) {
+            setDeviceTestMaintenanceModeForTest(true);
+            SessionManager.get().saveKioskEnabled(false);
+            cancelPendingAppTaskRestore();
+            OWNER_POLICY_GATE.invalidate();
+            boolean policiesCleared = SystemAppController.clearKioskPolicies(context);
+            boolean testPackagesReady =
+                    SystemAppController.prepareTestPackages(context, testPackages);
+            return policiesCleared && testPackagesReady;
+        }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         ComponentName admin = getAdminComponent(context);
         if (dpm == null || admin == null || !dpm.isDeviceOwnerApp(context.getPackageName())) {
@@ -308,6 +394,20 @@ public final class KioskManager {
         if (context == null) {
             return false;
         }
+        if (SystemAppController.isPlatformSystemApp(context)) {
+            boolean testPackagesRestored =
+                    SystemAppController.restoreTestPackages(context, testPackages);
+            SessionManager.get().saveKioskEnabled(true);
+            setDeviceTestMaintenanceModeForTest(false);
+            OWNER_POLICY_GATE.invalidate();
+            boolean applied = SystemAppController.applyKioskPolicies(context);
+            boolean restored = testPackagesRestored && applied;
+            AppLogger.i(
+                    TAG,
+                    "Restored Android 12 system-app kiosk after test maintenance=" + restored
+            );
+            return restored;
+        }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         ComponentName admin = getAdminComponent(context);
         if (dpm == null || admin == null || !dpm.isDeviceOwnerApp(context.getPackageName())) {
@@ -362,6 +462,10 @@ public final class KioskManager {
 
     private static void clearOwnerPolicies(Context context) {
         OWNER_POLICY_GATE.invalidate();
+        if (isSystemAppMode(context)) {
+            SystemAppController.clearKioskPolicies(context);
+            return;
+        }
         DevicePolicyManager dpm = getDevicePolicyManager(context);
         ComponentName admin = getAdminComponent(context);
         if (dpm == null || admin == null) {
@@ -429,7 +533,7 @@ public final class KioskManager {
         }
         return KioskRestorePolicy.shouldRestore(
                 SessionManager.get().isKioskEnabled(),
-                isDeviceOwner(context),
+                isManagedDevice(context),
                 isScreenInteractive(context),
                 isKeyguardLocked(context),
                 changingConfigurations,

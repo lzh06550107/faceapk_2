@@ -9,6 +9,9 @@ param(
     [int]$InstrumentationTimeoutSeconds = 180,
     [ValidateRange(5, 60)]
     [int]$MaintenanceReadyTimeoutSeconds = 15,
+    [string]$PlatformPk8,
+    [string]$PlatformX509Pem,
+    [string]$ApkSigner,
     [switch]$UseDeviceOwnerMaintenanceBridge,
     [switch]$StopProductionAppForSmoke
 )
@@ -107,7 +110,7 @@ try {
         -ReportDirectory $ReportDirectory
 
     if ($preflightConflict.Conflict -and -not $UseDeviceOwnerMaintenanceBridge) {
-        throw "Smoke UI preflight detected an active production Device Owner/Kiosk conflict: $($preflightConflict.Reason). Re-run on this dedicated terminal with -UseDeviceOwnerMaintenanceBridge."
+        throw "Smoke UI preflight detected an active production managed-device/Kiosk conflict: $($preflightConflict.Reason). Re-run on this dedicated terminal with -UseDeviceOwnerMaintenanceBridge."
     }
 
     $buildTasks = @(":app:assembleSmoke", ":app:assembleSmokeAndroidTest")
@@ -147,6 +150,37 @@ try {
         if (-not $deviceOwnerTestApk) {
             throw "Device Owner maintenance APK was not found after build."
         }
+
+        if ($preflightConflict.IsSystemApp) {
+            if ([string]::IsNullOrWhiteSpace($PlatformPk8) -or
+                [string]::IsNullOrWhiteSpace($PlatformX509Pem)) {
+                throw "Android 12 System App maintenance requires -PlatformPk8 and -PlatformX509Pem so the temporary com.punch.app build can update the platform-signed production package."
+            }
+            if (-not (Test-Path $PlatformPk8)) {
+                throw "Platform key not found: $PlatformPk8"
+            }
+            if (-not (Test-Path $PlatformX509Pem)) {
+                throw "Platform certificate not found: $PlatformX509Pem"
+            }
+
+            $signScript = Join-Path $PSScriptRoot "sign-platform-apk.ps1"
+            $signedMaintenanceApk = Join-Path $ReportDirectory "device-owner-test-platform.apk"
+            $signArgs = @{
+                InputApk = $deviceOwnerTestApk.FullName
+                PlatformPk8 = $PlatformPk8
+                PlatformX509Pem = $PlatformX509Pem
+                OutputApk = $signedMaintenanceApk
+            }
+            if (-not [string]::IsNullOrWhiteSpace($ApkSigner)) {
+                $signArgs["ApkSigner"] = $ApkSigner
+            }
+            & $signScript @signArgs
+            if (-not (Test-Path $signedMaintenanceApk)) {
+                throw "Platform-signed maintenance APK was not produced: $signedMaintenanceApk"
+            }
+            $deviceOwnerTestApk = Get-Item $signedMaintenanceApk
+            Write-Host "[INFO] System App maintenance APK platform-signed for transactional update."
+        }
     }
 
     Write-Host "[INFO] App APK: $($appApk.FullName)"
@@ -180,8 +214,8 @@ try {
 
     if ($preflightConflict.Conflict -and $UseDeviceOwnerMaintenanceBridge) {
         $bridgeUsed = $true
-        Write-Host "[WARN] Device Owner/Kiosk conflict confirmed: $($preflightConflict.Reason)" -ForegroundColor Yellow
-        Write-Host "[INFO] Entering transactional Device Owner maintenance mode."
+        Write-Host "[WARN] Managed-device/Kiosk conflict confirmed: $($preflightConflict.Reason)" -ForegroundColor Yellow
+        Write-Host "[INFO] Entering transactional managed-device maintenance mode."
 
         $backupDirectory = Join-Path $ReportDirectory "production-backup"
         $productionBackup = Backup-InstalledPackageApks `
@@ -196,7 +230,7 @@ try {
             -Arguments @("install", "-r", "-d", $deviceOwnerTestApk.FullName) `
             -LogPath (Join-Path $ReportDirectory "install-device-owner-test.log")
         if ($maintenanceInstallExit -ne 0) {
-            throw "Unable to update $ProductionPackageName with the temporary Device Owner maintenance build (exit $maintenanceInstallExit). The installed production APK and deviceOwnerTest build must use the same signing certificate."
+            throw "Unable to update $ProductionPackageName with the temporary maintenance build (exit $maintenanceInstallExit). The installed production APK and maintenance build must use the same signing certificate."
         }
         $maintenanceBuildInstalled = $true
 
@@ -218,7 +252,7 @@ try {
             -TimeoutSeconds $MaintenanceReadyTimeoutSeconds `
             -ReportDirectory (Join-Path $ReportDirectory "maintenance-enter")
         if (-not $maintenanceState.Ready) {
-            throw "Device Owner maintenance mode did not become test-ready within $MaintenanceReadyTimeoutSeconds seconds. lockTask=$($maintenanceState.IsLockTaskActive), smokeSuspended=$($maintenanceState.SmokeSuspended), smokeTestSuspended=$($maintenanceState.SmokeTestSuspended). See maintenance-enter\maintenance-state.txt and maintenance-wait.txt."
+            throw "Managed-device maintenance mode did not become test-ready within $MaintenanceReadyTimeoutSeconds seconds. lockTask=$($maintenanceState.IsLockTaskActive), productionForeground=$($maintenanceState.ProductionForeground), productionHomeHeld=$($maintenanceState.ProductionHomeHeld), smokeSuspended=$($maintenanceState.SmokeSuspended), smokeTestSuspended=$($maintenanceState.SmokeTestSuspended). See maintenance-enter\maintenance-state.txt and maintenance-wait.txt."
         }
     }
 
@@ -386,6 +420,8 @@ finally {
         "bridge_used=$bridgeUsed",
         "maintenance_build_installed=$maintenanceBuildInstalled",
         "maintenance_entered=$maintenanceEntered",
+        "preflight_system_app=$($null -ne $preflightConflict -and $preflightConflict.IsSystemApp)",
+        "platform_maintenance_signing=$($null -ne $preflightConflict -and $preflightConflict.IsSystemApp -and -not [string]::IsNullOrWhiteSpace($PlatformPk8))",
         "production_backup_available=$($null -ne $productionBackup)",
         "production_restore_succeeded=$productionRestoreSucceeded",
         "report_directory=$ReportDirectory",

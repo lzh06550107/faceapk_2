@@ -26,6 +26,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
+import androidx.core.app.ActivityCompat;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Set;
 
 public final class WifiConfigDialogHelper {
+    public static final int REQUEST_WIFI_SCAN_PERMISSION = 4101;
     private static final long WIFI_CONNECT_TIMEOUT_MS = 15_000L;
     private static final long WIFI_CONNECT_POLL_INTERVAL_MS = 1_000L;
 
@@ -63,7 +65,7 @@ public final class WifiConfigDialogHelper {
         content.setPadding(padding, padding, padding, 0);
 
         TextView hint = new TextView(context);
-        hint.setText("可搜索附近 Wi-Fi，也可手动输入 SSID。搜索需要定位权限且系统定位已开启；连接配置仍要求当前应用是 Device Owner。");
+        hint.setText("可搜索附近 Wi-Fi，也可手动输入 SSID。搜索需要定位权限且系统定位已开启；连接配置要求当前应用具备 Android 12 System App 或 Device Owner 管理能力。");
         hint.setTextColor(ContextCompat.getColor(context, R.color.text_secondary));
         hint.setTextSize(12f);
         content.addView(hint, new LinearLayout.LayoutParams(
@@ -221,8 +223,12 @@ public final class WifiConfigDialogHelper {
 
     private void connectConfiguredWifi(String ssid, String password, Button connectButton) {
         Context context = activity;
-        if (!KioskManager.isDeviceOwner(context)) {
-            Toast.makeText(context, "当前不是 Device Owner，无法静默配置 Wi-Fi", Toast.LENGTH_LONG).show();
+        if (!KioskManager.isManagedDevice(context)) {
+            Toast.makeText(
+                    context,
+                    "当前既不是 Android 12 System App，也不是 Device Owner，无法静默配置 Wi-Fi",
+                    Toast.LENGTH_LONG
+            ).show();
             return;
         }
         cancelPendingWifiConnectCheck();
@@ -269,8 +275,8 @@ public final class WifiConfigDialogHelper {
 
                 String message;
                 switch (result) {
-                    case NOT_DEVICE_OWNER:
-                        message = "设备未获得 Device Owner 权限，无法写入 Wi-Fi 配置";
+                    case NOT_MANAGED_DEVICE:
+                        message = "设备未获得 System App / Device Owner 管理能力，无法写入 Wi-Fi 配置";
                         break;
                     case WIFI_SERVICE_UNAVAILABLE:
                         message = "Wi-Fi 服务不可用";
@@ -319,7 +325,11 @@ public final class WifiConfigDialogHelper {
         if (!hasWifiScanPermission()) {
             KioskManager.ensureOwnerRuntimePermissions(activity);
             if (!hasWifiScanPermission()) {
-                showWifiPermissionSettingsDialog();
+                if (KioskManager.isManagedDevice(activity)) {
+                    showManagedWifiPermissionFailureDialog();
+                } else {
+                    requestWifiScanPermissionForDevelopment();
+                }
                 return;
             }
         }
@@ -357,10 +367,66 @@ public final class WifiConfigDialogHelper {
                 .show();
     }
 
+    private void requestWifiScanPermissionForDevelopment() {
+        ActivityCompat.requestPermissions(
+                activity,
+                new String[]{
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                },
+                REQUEST_WIFI_SCAN_PERMISSION
+        );
+    }
+
+    public boolean onRequestPermissionsResult(int requestCode,
+                                              String[] permissions,
+                                              int[] grantResults) {
+        if (requestCode != REQUEST_WIFI_SCAN_PERMISSION) {
+            return false;
+        }
+        if (!hasWifiScanPermission()) {
+            showWifiPermissionSettingsDialog();
+            return true;
+        }
+        if (!isLocationServiceEnabled()) {
+            showEnableLocationDialog();
+            return true;
+        }
+        retryPendingWifiScanIfReady();
+        return true;
+    }
+
+    private void showManagedWifiPermissionFailureDialog() {
+        StringBuilder message = new StringBuilder();
+        message.append("当前管理模式：")
+                .append(KioskManager.managementModeLabel(activity))
+                .append("\n扫描附近 Wi-Fi 需要 ACCESS_FINE_LOCATION。\n");
+
+        if (KioskManager.isSystemAppMode(activity)) {
+            String missing = SystemAppController.describeMissingProductionPrivileges(activity);
+            if (missing == null || missing.trim().isEmpty()) {
+                message.append("System App 已识别，但自动授予定位权限失败。")
+                        .append("请检查系统镜像中的 platform 签名、运行时授权能力和日志。");
+            } else {
+                message.append("System App 权限自检缺失：")
+                        .append(missing)
+                        .append("。请修复 ROM/System App 权限配置。");
+            }
+        } else {
+            message.append("Device Owner 自动授予定位权限失败，请检查 DevicePolicyManager 状态。");
+        }
+
+        new AlertDialog.Builder(activity)
+                .setTitle("自动授权失败")
+                .setMessage(message.toString())
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
     private void showWifiPermissionSettingsDialog() {
         new AlertDialog.Builder(activity)
-                .setTitle("缺少权限")
-                .setMessage("扫描附近 Wi-Fi 需要定位权限。请在系统设置中授予后重试。")
+                .setTitle("需要精确位置权限")
+                .setMessage("当前为普通开发安装。Android 12 扫描附近 Wi-Fi 需要精确位置权限，请选择“使用应用时允许”并允许精确位置。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("去设置", (dialog, which) -> openAppPermissionSettings())
                 .show();
