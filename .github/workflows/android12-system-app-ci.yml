@@ -31,3 +31,14 @@ jobs:
 
       - name: Assemble debug APK
         run: ./gradlew assembleDebug --stacktrace
+
+      - name: Assemble release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Validate system-app XML
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse("system-app/privapp-permissions-com.punch.app.xml")
+          print("system-app XML OK")
+          PY
