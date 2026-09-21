@@ -14,6 +14,7 @@ import com.punch.app.db.DatabaseHelper;
 import com.punch.app.face.FaceApplyWorker;
 import com.punch.app.face.FaceLibraryReconciler;
 import com.punch.app.face.FaceManager;
+import com.punch.app.face.PunchPreparationPolicy;
 import com.punch.app.network.InteractionLogStore;
 import com.punch.app.service.HeartbeatManager;
 import com.punch.app.service.SyncCoordinator;
@@ -34,6 +35,9 @@ import java.util.concurrent.Executors;
 public class PunchApplication extends Application {
     private static final String TAG = "PunchApplication";
     private static final long FACE_SDK_READY_TIMEOUT_MS = 120_000L;
+    private static final long PUNCH_PREPARATION_RETRY_DELAY_MS = 10_000L;
+    private static final String PUNCH_STATUS_TOKEN_EXPIRED = "登录状态已失效，请重新登录";
+    private static final String PUNCH_STATUS_PREPARATION_CRASHED = "打卡数据准备异常，稍后自动重试";
     private static final long KIOSK_RESTORE_DELAY_MS = 250L;
     private static final long KIOSK_FOREGROUND_WATCHDOG_INTERVAL_MS = 1_000L;
     private static final int MAX_STATUS_HISTORY = 5;
@@ -50,6 +54,7 @@ public class PunchApplication extends Application {
     private volatile boolean faceSdkInitializing;
     private volatile boolean punchDataPreparing;
     private volatile boolean punchDataReady;
+    private volatile long punchPreparationRetryNotBeforeAtMs;
     private volatile String punchDataStatus = "正在准备打卡数据...";
     private volatile int punchDataStatusLevel = STATUS_LEVEL_PROGRESS;
     private volatile boolean punchStatusAttention;
@@ -251,15 +256,24 @@ public class PunchApplication extends Application {
         });
     }
 
-    public void preparePunchRecognitionData() {
+    public synchronized void preparePunchRecognitionData() {
         if (!SessionManager.get().isTokenValid()) {
+            if (!PUNCH_STATUS_TOKEN_EXPIRED.equals(punchDataStatus)
+                    || punchDataStatusLevel != STATUS_LEVEL_ERROR) {
+                markPunchRecognitionFailed(PUNCH_STATUS_TOKEN_EXPIRED);
+            }
             return;
         }
         if (punchDataPreparing || punchDataReady) {
             return;
         }
+
+        long now = System.currentTimeMillis();
+        if (!PunchPreparationPolicy.isRetryAllowed(punchPreparationRetryNotBeforeAtMs, now)) {
+            return;
+        }
         beginPunchDataPreparation("正在准备打卡数据...");
-        appExecutor.execute(this::runPunchPreparation);
+        enqueuePunchPreparation();
     }
 
     /**
@@ -270,12 +284,17 @@ public class PunchApplication extends Application {
      * This prevents an older async preparation from racing with LoginActivity and leaving the
      * UI stuck on an "initializing" message while punch recognition is already ready.</p>
      */
-    public void restartPunchRecognitionData() {
+    public synchronized void restartPunchRecognitionData() {
         if (!SessionManager.get().isTokenValid()) {
+            if (!PUNCH_STATUS_TOKEN_EXPIRED.equals(punchDataStatus)
+                    || punchDataStatusLevel != STATUS_LEVEL_ERROR) {
+                markPunchRecognitionFailed(PUNCH_STATUS_TOKEN_EXPIRED);
+            }
             return;
         }
+        punchPreparationRetryNotBeforeAtMs = 0L;
         beginPunchDataPreparation("正在初始化打卡环境...");
-        appExecutor.execute(this::runPunchPreparation);
+        enqueuePunchPreparation();
     }
 
     public boolean isPunchRecognitionReady() {
@@ -297,6 +316,7 @@ public class PunchApplication extends Application {
     public void resetPunchRecognitionState() {
         punchDataPreparing = false;
         punchDataReady = false;
+        punchPreparationRetryNotBeforeAtMs = 0L;
         punchDataStatus = "正在准备打卡数据...";
         punchDataStatusLevel = STATUS_LEVEL_PROGRESS;
     }
@@ -652,12 +672,17 @@ public class PunchApplication extends Application {
     public void markPunchRecognitionReady(String status) {
         punchDataPreparing = false;
         punchDataReady = true;
+        punchPreparationRetryNotBeforeAtMs = 0L;
         pushStatus(status, STATUS_LEVEL_SUCCESS, true, false);
     }
 
     public void markPunchRecognitionFailed(String status) {
         punchDataPreparing = false;
         punchDataReady = false;
+        punchPreparationRetryNotBeforeAtMs = PunchPreparationPolicy.nextRetryAt(
+                System.currentTimeMillis(),
+                PUNCH_PREPARATION_RETRY_DELAY_MS
+        );
         pushStatus(status, STATUS_LEVEL_ERROR, true, true);
     }
 
@@ -702,6 +727,25 @@ public class PunchApplication extends Application {
             }
         }
         FaceApplyWorker.get().trigger(this);
+    }
+
+    private void enqueuePunchPreparation() {
+        try {
+            appExecutor.execute(() -> {
+                try {
+                    runPunchPreparation();
+                } catch (RuntimeException | LinkageError error) {
+                    handlePunchPreparationCrash(error);
+                }
+            });
+        } catch (RuntimeException | LinkageError error) {
+            handlePunchPreparationCrash(error);
+        }
+    }
+
+    private void handlePunchPreparationCrash(Throwable error) {
+        AppLogger.e(TAG, "Punch preparation crashed", error);
+        markPunchRecognitionFailed(PUNCH_STATUS_PREPARATION_CRASHED);
     }
 
     private boolean waitForFaceSdkReady() {
