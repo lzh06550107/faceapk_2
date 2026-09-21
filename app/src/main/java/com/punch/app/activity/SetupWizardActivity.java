@@ -218,12 +218,15 @@ public class SetupWizardActivity extends AppCompatActivity {
 
     private void refreshNtpState(boolean initializeInput) {
         ntpAvailability = SystemNtpConfigurator.getAvailability(this);
+        boolean systemAppMode = KioskManager.isSystemAppMode(this);
         boolean deviceOwner = KioskManager.isDeviceOwner(this);
         boolean writePermission = SystemNtpConfigurator.hasWritePermission(this);
         String currentServer = SystemNtpConfigurator.getCurrentServer(this);
 
         tvNtpCapability.setText(
-                "Device Owner：" + (deviceOwner ? "✓" : "✗")
+                "设备管理模式：" + KioskManager.managementModeLabel(this)
+                        + "\nAndroid 12 System App：" + (systemAppMode ? "✓" : "✗")
+                        + "\nDevice Owner 回退：" + (deviceOwner ? "✓" : "✗")
                         + "\n系统 NTP 写权限：" + (writePermission ? "✓" : "✗")
         );
         tvNtpCurrentServer.setText(
@@ -378,13 +381,13 @@ public class SetupWizardActivity extends AppCompatActivity {
 
     private String unavailableNtpMessage(SystemNtpPolicy.ManagementAvailability availability) {
         if (availability == SystemNtpPolicy.ManagementAvailability.UNSUPPORTED_ANDROID_VERSION) {
-            return "当前 Android 版本不支持 Device Owner 管理自动时间。";
+            return "当前 Android 版本不支持此系统时间管理方案。";
         }
         if (availability == SystemNtpPolicy.ManagementAvailability.NOT_DEVICE_OWNER) {
-            return "当前 App 不是 Device Owner，无法应用系统时间策略。";
+            return "当前 App 既不是 Android 12 platform system app，也不是 Device Owner，无法应用系统时间策略。";
         }
         if (availability == SystemNtpPolicy.ManagementAvailability.WRITE_PERMISSION_MISSING) {
-            return "WRITE_SECURE_SETTINGS 未授权。请先完成设备初始化授权：pm grant com.punch.app android.permission.WRITE_SECURE_SETTINGS";
+            return "WRITE_SECURE_SETTINGS 未授权。System App 版本请检查 platform 签名、Manifest 权限和 ROM privileged-permission 配置。";
         }
         return "系统 NTP 管理能力不可用。";
     }
