@@ -370,6 +370,8 @@ function Get-SmokeDeviceConflict {
     $owners = Get-AdbOutput -Serial $Serial -Arguments @("shell", "dpm", "list-owners") -IgnoreFailure
     $devicePolicy = Get-AdbOutput -Serial $Serial -Arguments @("shell", "dumpsys", "device_policy") -IgnoreFailure
     $activityState = Get-AdbOutput -Serial $Serial -Arguments @("shell", "dumpsys", "activity", "activities") -IgnoreFailure
+    $productionPackage = Get-AdbOutput -Serial $Serial -Arguments @("shell", "dumpsys", "package", $ProductionPackageName) -IgnoreFailure
+    $homeRoleHolders = Get-AdbOutput -Serial $Serial -Arguments @("shell", "cmd", "role", "get-role-holders", "android.app.role.HOME") -IgnoreFailure
     $productionPid = Get-AdbOutput -Serial $Serial -Arguments @("shell", "pidof", $ProductionPackageName) -IgnoreFailure
 
     if ($ReportDirectory) {
@@ -391,6 +393,14 @@ function Get-SmokeDeviceConflict {
             "",
             $activityState
         ) | Set-Content -Path (Join-Path $ReportDirectory "activity-state.txt") -Encoding UTF8
+        @(
+            "captured_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
+            "--- dumpsys package ---",
+            $productionPackage,
+            "",
+            "--- HOME role holders ---",
+            $homeRoleHolders
+        ) | Set-Content -Path (Join-Path $ReportDirectory "system-app-state.txt") -Encoding UTF8
     }
 
     $escapedPackage = [Regex]::Escape($ProductionPackageName)
@@ -404,6 +414,9 @@ function Get-SmokeDeviceConflict {
     $isProductionForeground = $activityState -match "(?im)(?:mResumedActivity|topResumedActivity|ResumedActivity)[^\r\n]*$escapedPackage/"
     $isLockTaskActive = $activityState -match "(?im)mLockTaskModeState\s*=\s*(?:LOCKED|PINNED)" -or
         $activityState -match "(?im)lockTaskModeState\s*=\s*(?:LOCKED|PINNED)"
+    $isSystemApp = $productionPackage -match "(?im)(?:pkgFlags|flags)\s*=\s*\[[^\]]*\bSYSTEM\b" -or
+        $productionPackage -match "(?im)\bUPDATED_SYSTEM_APP\b"
+    $isProductionHome = $homeRoleHolders -match "(?im)^\s*$escapedPackage\s*$"
 
     $reasons = New-Object System.Collections.Generic.List[string]
     if ($isDeviceOwner -and $isProductionRunning) {
@@ -415,6 +428,12 @@ function Get-SmokeDeviceConflict {
     if ($isDeviceOwner -and $isLockTaskActive) {
         [void]$reasons.Add("device is in active LockTask/Kiosk mode")
     }
+    if ($isSystemApp -and $isProductionRunning) {
+        [void]$reasons.Add("production Android 12 System App process is running")
+    }
+    if ($isSystemApp -and $isProductionHome) {
+        [void]$reasons.Add("production Android 12 System App holds ROLE_HOME")
+    }
 
     $hasConflict = $reasons.Count -gt 0
     $reason = if ($hasConflict) { $reasons -join "; " } else { "" }
@@ -423,6 +442,8 @@ function Get-SmokeDeviceConflict {
         Conflict = [bool]$hasConflict
         Reason = $reason
         IsDeviceOwner = [bool]$isDeviceOwner
+        IsSystemApp = [bool]$isSystemApp
+        IsProductionHome = [bool]$isProductionHome
         IsProductionRunning = [bool]$isProductionRunning
         IsProductionForeground = [bool]$isProductionForeground
         IsLockTaskActive = [bool]$isLockTaskActive
@@ -596,9 +617,13 @@ function Get-DeviceOwnerMaintenanceState {
     $activityState = Get-AdbOutput -Serial $Serial -Arguments @("shell", "dumpsys", "activity", "activities") -IgnoreFailure
     $smokePackage = Get-AdbOutput -Serial $Serial -Arguments @("shell", "dumpsys", "package", $SmokePackageName) -IgnoreFailure
     $smokeTestPackage = Get-AdbOutput -Serial $Serial -Arguments @("shell", "dumpsys", "package", $SmokeTestPackageName) -IgnoreFailure
+    $homeRoleHolders = Get-AdbOutput -Serial $Serial -Arguments @("shell", "cmd", "role", "get-role-holders", "android.app.role.HOME") -IgnoreFailure
 
+    $escapedProductionPackage = [Regex]::Escape($ProductionPackageName)
     $isLockTaskActive = $activityState -match "(?im)mLockTaskModeState\s*=\s*(?:LOCKED|PINNED)" -or
         $activityState -match "(?im)lockTaskModeState\s*=\s*(?:LOCKED|PINNED)"
+    $productionForeground = $activityState -match "(?im)(?:mResumedActivity|topResumedActivity|ResumedActivity)[^\r\n]*$escapedProductionPackage/"
+    $productionHomeHeld = $homeRoleHolders -match "(?im)^\s*$escapedProductionPackage\s*$"
     $smokeSuspended = $smokePackage -match "(?im)\bsuspended=true\b"
     $smokeTestSuspended = $smokeTestPackage -match "(?im)\bsuspended=true\b"
 
@@ -610,6 +635,8 @@ function Get-DeviceOwnerMaintenanceState {
             "smoke_package=$SmokePackageName",
             "smoke_test_package=$SmokeTestPackageName",
             "lock_task_active=$isLockTaskActive",
+            "production_foreground=$productionForeground",
+            "production_home_held=$productionHomeHeld",
             "smoke_suspended=$smokeSuspended",
             "smoke_test_suspended=$smokeTestSuspended",
             "",
@@ -625,8 +652,16 @@ function Get-DeviceOwnerMaintenanceState {
     }
 
     return [pscustomobject]@{
-        Ready = [bool](-not $isLockTaskActive -and -not $smokeSuspended -and -not $smokeTestSuspended)
+        Ready = [bool](
+            -not $isLockTaskActive -and
+            -not $productionForeground -and
+            -not $productionHomeHeld -and
+            -not $smokeSuspended -and
+            -not $smokeTestSuspended
+        )
         IsLockTaskActive = [bool]$isLockTaskActive
+        ProductionForeground = [bool]$productionForeground
+        ProductionHomeHeld = [bool]$productionHomeHeld
         SmokeSuspended = [bool]$smokeSuspended
         SmokeTestSuspended = [bool]$smokeTestSuspended
     }
