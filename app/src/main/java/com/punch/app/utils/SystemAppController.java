@@ -52,6 +52,22 @@ public final class SystemAppController {
             "android.permission.SET_PREFERRED_APPLICATIONS";
     public static final String PERMISSION_GRANT_RUNTIME_PERMISSIONS =
             "android.permission.GRANT_RUNTIME_PERMISSIONS";
+    public static final String PERMISSION_READ_PRIVILEGED_PHONE_STATE =
+            "android.permission.READ_PRIVILEGED_PHONE_STATE";
+    public static final String PERMISSION_START_ACTIVITIES_FROM_BACKGROUND =
+            "android.permission.START_ACTIVITIES_FROM_BACKGROUND";
+
+    private static final String[] REQUIRED_PRODUCTION_PERMISSIONS = {
+            PERMISSION_WRITE_SECURE_SETTINGS,
+            PERMISSION_WRITE_SETTINGS,
+            PERMISSION_STATUS_BAR,
+            PERMISSION_INSTALL_PACKAGES,
+            PERMISSION_MANAGE_USERS,
+            PERMISSION_SET_PREFERRED_APPLICATIONS,
+            PERMISSION_GRANT_RUNTIME_PERMISSIONS,
+            PERMISSION_READ_PRIVILEGED_PHONE_STATE,
+            PERMISSION_START_ACTIVITIES_FROM_BACKGROUND
+    };
 
     private static volatile boolean kioskPoliciesApplied;
     @SuppressWarnings("deprecation")
@@ -88,6 +104,43 @@ public final class SystemAppController {
         return context != null
                 && permission != null
                 && context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    public static List<String> getMissingProductionPrivileges(Context context) {
+        List<String> missing = new ArrayList<>();
+        if (!isPlatformSystemApp(context)) {
+            missing.add("platform_system_app_identity");
+            return missing;
+        }
+        for (String permission : REQUIRED_PRODUCTION_PERMISSIONS) {
+            if (!hasPermission(context, permission)) {
+                missing.add(permission);
+            }
+        }
+        return missing;
+    }
+
+    public static boolean hasAllProductionPrivileges(Context context) {
+        return getMissingProductionPrivileges(context).isEmpty();
+    }
+
+    public static String describeMissingProductionPrivileges(Context context) {
+        List<String> missing = getMissingProductionPrivileges(context);
+        if (missing.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (String item : missing) {
+            if (builder.length() > 0) {
+                builder.append(", ");
+            }
+            if (item != null && item.startsWith("android.permission.")) {
+                builder.append(item.substring("android.permission.".length()));
+            } else {
+                builder.append(item);
+            }
+        }
+        return builder.toString();
     }
 
     public static boolean canManageSystemSettings(Context context) {
