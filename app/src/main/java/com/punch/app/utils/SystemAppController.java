@@ -3,13 +3,10 @@ package com.punch.app.utils;
 import android.Manifest;
 import android.app.Activity;
 import android.app.KeyguardManager;
-import android.content.ComponentName;
+import android.app.role.RoleManager;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.os.Build;
 import android.os.Process;
 import android.os.UserHandle;
@@ -20,6 +17,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Android 12 privileged-system-app device controller.
@@ -46,8 +46,8 @@ public final class SystemAppController {
             "android.permission.INSTALL_PACKAGES";
     public static final String PERMISSION_MANAGE_USERS =
             "android.permission.MANAGE_USERS";
-    public static final String PERMISSION_SET_PREFERRED_APPLICATIONS =
-            "android.permission.SET_PREFERRED_APPLICATIONS";
+    public static final String PERMISSION_MANAGE_ROLE_HOLDERS =
+            "android.permission.MANAGE_ROLE_HOLDERS";
     public static final String PERMISSION_GRANT_RUNTIME_PERMISSIONS =
             "android.permission.GRANT_RUNTIME_PERMISSIONS";
     public static final String PERMISSION_READ_PRIVILEGED_PHONE_STATE =
@@ -61,13 +61,14 @@ public final class SystemAppController {
             PERMISSION_STATUS_BAR,
             PERMISSION_INSTALL_PACKAGES,
             PERMISSION_MANAGE_USERS,
-            PERMISSION_SET_PREFERRED_APPLICATIONS,
+            PERMISSION_MANAGE_ROLE_HOLDERS,
             PERMISSION_GRANT_RUNTIME_PERMISSIONS,
             PERMISSION_READ_PRIVILEGED_PHONE_STATE,
             PERMISSION_START_ACTIVITIES_FROM_BACKGROUND
     };
 
     private static volatile boolean kioskPoliciesApplied;
+    private static final AtomicBoolean homeRoleRequestInFlight = new AtomicBoolean(false);
     @SuppressWarnings("deprecation")
     private static KeyguardManager.KeyguardLock keyguardLock;
 
@@ -296,68 +297,84 @@ public final class SystemAppController {
     }
 
     private static boolean makeKioskHomePreferred(Context context) {
-        if (!hasPermission(context, PERMISSION_SET_PREFERRED_APPLICATIONS)) {
-            AppLogger.w(TAG, "SET_PREFERRED_APPLICATIONS missing; cannot persist kiosk HOME");
+        if (!hasPermission(context, PERMISSION_MANAGE_ROLE_HOLDERS)) {
+            AppLogger.w(TAG, "MANAGE_ROLE_HOLDERS missing; cannot persist kiosk HOME");
             return false;
         }
-        PackageManager pm = context.getPackageManager();
-        Intent homeIntent = new Intent(Intent.ACTION_MAIN);
-        homeIntent.addCategory(Intent.CATEGORY_HOME);
-        homeIntent.addCategory(Intent.CATEGORY_DEFAULT);
-        List<ResolveInfo> homeActivities = pm.queryIntentActivities(
-                homeIntent,
-                PackageManager.MATCH_DEFAULT_ONLY
-        );
-        List<ComponentName> candidates = new ArrayList<>();
-        if (homeActivities != null) {
-            for (ResolveInfo info : homeActivities) {
-                if (info == null || info.activityInfo == null) {
-                    continue;
-                }
-                candidates.add(new ComponentName(
-                        info.activityInfo.packageName,
-                        info.activityInfo.name
-                ));
-            }
-        }
-        ComponentName target = new ComponentName(
-                context,
-                "com.punch.app.activity.KioskHomeActivity"
-        );
-        if (!candidates.contains(target)) {
-            candidates.add(target);
-        }
-
-        IntentFilter filter = new IntentFilter(Intent.ACTION_MAIN);
-        filter.addCategory(Intent.CATEGORY_HOME);
-        filter.addCategory(Intent.CATEGORY_DEFAULT);
-        try {
-            pm.clearPackagePreferredActivities(context.getPackageName());
-            pm.addPreferredActivity(
-                    filter,
-                    IntentFilter.MATCH_CATEGORY_EMPTY,
-                    candidates.toArray(new ComponentName[0]),
-                    target
-            );
-            ResolveInfo resolved = pm.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY);
-            boolean selected = resolved != null
-                    && resolved.activityInfo != null
-                    && context.getPackageName().equals(resolved.activityInfo.packageName)
-                    && target.getClassName().equals(resolved.activityInfo.name);
-            AppLogger.i(TAG, "Kiosk HOME preferred=" + selected);
-            return selected;
-        } catch (RuntimeException e) {
-            AppLogger.e(TAG, "Unable to set kiosk HOME", e);
+        RoleManager roleManager =
+                (RoleManager) context.getSystemService(Context.ROLE_SERVICE);
+        if (roleManager == null || !roleManager.isRoleAvailable(RoleManager.ROLE_HOME)) {
+            AppLogger.w(TAG, "HOME role is unavailable");
             return false;
         }
+        if (roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
+            return true;
+        }
+        return requestHomeRoleChange(context, roleManager, true);
     }
 
     private static void clearPreferredHome(Context context) {
+        RoleManager roleManager =
+                (RoleManager) context.getSystemService(Context.ROLE_SERVICE);
+        if (roleManager == null
+                || !roleManager.isRoleAvailable(RoleManager.ROLE_HOME)
+                || !roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
+            return;
+        }
+        requestHomeRoleChange(context, roleManager, false);
+    }
+
+    /**
+     * Android 12 exposes role-holder mutation as a hidden System API guarded by
+     * MANAGE_ROLE_HOLDERS. The production APK is platform-signed, so invoking it
+     * reflectively keeps the Gradle build on the public SDK while using the proper
+     * system role mechanism instead of the deprecated PackageManager preferred APIs.
+     */
+    private static boolean requestHomeRoleChange(Context context,
+                                                 RoleManager roleManager,
+                                                 boolean add) {
+        if (!homeRoleRequestInFlight.compareAndSet(false, true)) {
+            return true;
+        }
         try {
-            context.getPackageManager()
-                    .clearPackagePreferredActivities(context.getPackageName());
-        } catch (RuntimeException e) {
-            AppLogger.w(TAG, "Unable to clear kiosk HOME preference: " + e.getMessage());
+            String methodName = add ? "addRoleHolderAsUser" : "removeRoleHolderAsUser";
+            Method method = RoleManager.class.getMethod(
+                    methodName,
+                    String.class,
+                    String.class,
+                    int.class,
+                    UserHandle.class,
+                    Executor.class,
+                    Consumer.class
+            );
+            Executor directExecutor = Runnable::run;
+            Consumer<Boolean> callback = success -> {
+                homeRoleRequestInFlight.set(false);
+                AppLogger.i(
+                        TAG,
+                        "HOME role " + (add ? "grant" : "release")
+                                + " completed=" + Boolean.TRUE.equals(success)
+                );
+                if (add && Boolean.TRUE.equals(success)
+                        && !roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
+                    AppLogger.w(TAG, "HOME role callback succeeded but role is not held");
+                }
+            };
+            method.invoke(
+                    roleManager,
+                    RoleManager.ROLE_HOME,
+                    context.getPackageName(),
+                    0,
+                    Process.myUserHandle(),
+                    directExecutor,
+                    callback
+            );
+            AppLogger.i(TAG, "Requested HOME role " + (add ? "grant" : "release"));
+            return true;
+        } catch (Exception e) {
+            homeRoleRequestInFlight.set(false);
+            AppLogger.e(TAG, "Unable to change Android 12 HOME role", e);
+            return false;
         }
     }
 
