@@ -17,7 +17,7 @@ public final class ScreenTimeoutPolicyManager {
 
     public static ScreenTimeoutPolicy.ManagementAvailability getAvailability(Context context) {
         boolean managedController = context != null
-                && (KioskManager.isSystemAppMode(context) || KioskManager.isDeviceOwner(context));
+                && KioskManager.canManageScreenSettings(context);
         return ScreenTimeoutPolicy.getManagementAvailability(
                 managedController,
                 Build.VERSION.SDK_INT
