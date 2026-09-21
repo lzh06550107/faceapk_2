@@ -35,7 +35,7 @@ App 只在以下条件全部满足时启用 System App backend：Android API 31 
 
 ## 4. Manifest 权限
 
-主 Manifest 已声明生产所需权限：`WRITE_SECURE_SETTINGS`、`WRITE_SETTINGS`、`STATUS_BAR`、`INSTALL_PACKAGES`、`REBOOT`、`MANAGE_USERS`、`SET_PREFERRED_APPLICATIONS`、`GRANT_RUNTIME_PERMISSIONS`、`DISABLE_KEYGUARD`、`START_ACTIVITIES_FROM_BACKGROUND`。
+主 Manifest 已声明生产所需权限：`WRITE_SECURE_SETTINGS`、`WRITE_SETTINGS`、`STATUS_BAR`、`INSTALL_PACKAGES`、`MANAGE_USERS`、`SET_PREFERRED_APPLICATIONS`、`GRANT_RUNTIME_PERMISSIONS`、`READ_PRIVILEGED_PHONE_STATE`、`DISABLE_KEYGUARD`、`START_ACTIVITIES_FROM_BACKGROUND`。
 
 ## 5. ROM allowlist
 
@@ -61,7 +61,10 @@ System App 模式直接写 `Settings.System.SCREEN_OFF_TIMEOUT` 与 `Settings.Gl
 
 `UpdateManager` 在“Android 12 platform system app + INSTALL_PACKAGES”或“Device Owner”任一条件满足时走 PackageInstaller 静默路径。更新 APK 必须继续使用相同 platform certificate。更新后的 `/data/app` 版本仍属于 updated system app，因此 System App backend 仍可识别。
 
-## 11. 开机恢复
+## 11. 常驻与开机恢复
+
+生产 Manifest 使用 `android:persistent="true"`。Android 只对 system image 应用生效，用于专用打卡终端的进程常驻/异常后恢复；普通开发安装不会因此获得系统持久进程能力。
+
 
 新增 `SystemBootReceiver`。Android 12 System App 在 `BOOT_COMPLETED` 后恢复 Kiosk enabled、重施 HOME/SystemUI/User restrictions/Keyguard/Screen timeout，并启动 `KioskHomeActivity`。由现有路由恢复 Setup/Login/Main 页面。
 
