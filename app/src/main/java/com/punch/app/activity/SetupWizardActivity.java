@@ -23,6 +23,7 @@ import com.punch.app.receiver.UpdateInstallStateReceiver;
 import com.punch.app.utils.KioskManager;
 import com.punch.app.utils.NtpProbeClient;
 import com.punch.app.utils.SessionManager;
+import com.punch.app.utils.SystemAppController;
 import com.punch.app.utils.SystemNtpConfigurator;
 import com.punch.app.utils.SystemNtpPolicy;
 import com.punch.app.utils.WifiConfigDialogHelper;
@@ -223,11 +224,20 @@ public class SetupWizardActivity extends AppCompatActivity {
         boolean writePermission = SystemNtpConfigurator.hasWritePermission(this);
         String currentServer = SystemNtpConfigurator.getCurrentServer(this);
 
+        String missingSystemPrivileges = systemAppMode
+                ? SystemAppController.describeMissingProductionPrivileges(this)
+                : "";
         tvNtpCapability.setText(
                 "设备管理模式：" + KioskManager.managementModeLabel(this)
                         + "\nAndroid 12 System App：" + (systemAppMode ? "✓" : "✗")
                         + "\nDevice Owner 回退：" + (deviceOwner ? "✓" : "✗")
                         + "\n系统 NTP 写权限：" + (writePermission ? "✓" : "✗")
+                        + (systemAppMode
+                        ? "\nSystem App 权限自检："
+                        + (missingSystemPrivileges.isEmpty()
+                        ? "✓"
+                        : "缺失 " + missingSystemPrivileges)
+                        : "")
         );
         tvNtpCurrentServer.setText(
                 currentServer.isEmpty() ? "当前系统 NTP：未配置" : "当前系统 NTP：" + currentServer
