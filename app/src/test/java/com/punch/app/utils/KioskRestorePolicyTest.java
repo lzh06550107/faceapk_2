@@ -8,7 +8,7 @@ import static org.junit.Assert.assertTrue;
 public class KioskRestorePolicyTest {
 
     @Test
-    public void restoreRequiresInteractiveUnlockedOwnerKioskWithoutResumedActivity() {
+    public void restoreRequiresInteractiveUnlockedManagedKioskWithoutResumedActivity() {
         assertTrue(KioskRestorePolicy.shouldRestore(
                 true, true, true, false, false, 0
         ));
