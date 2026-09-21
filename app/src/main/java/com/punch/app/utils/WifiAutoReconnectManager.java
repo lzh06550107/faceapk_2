@@ -95,8 +95,8 @@ public final class WifiAutoReconnectManager {
         if (ssid == null || ssid.trim().isEmpty()) {
             return AttemptResult.NO_SAVED_WIFI;
         }
-        if (!deps.isDeviceOwner()) {
-            return AttemptResult.NOT_DEVICE_OWNER;
+        if (!deps.canManageWifi()) {
+            return AttemptResult.NOT_MANAGED_DEVICE;
         }
         if (!deps.hasWifiService()) {
             return AttemptResult.WIFI_SERVICE_UNAVAILABLE;
