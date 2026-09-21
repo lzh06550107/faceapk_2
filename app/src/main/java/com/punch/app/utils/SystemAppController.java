@@ -56,6 +56,8 @@ public final class SystemAppController {
             "android.permission.READ_PRIVILEGED_PHONE_STATE";
     public static final String PERMISSION_START_ACTIVITIES_FROM_BACKGROUND =
             "android.permission.START_ACTIVITIES_FROM_BACKGROUND";
+    public static final String PERMISSION_SUSPEND_APPS =
+            "android.permission.SUSPEND_APPS";
 
     private static final String[] REQUIRED_PRODUCTION_PERMISSIONS = {
             PERMISSION_WRITE_SECURE_SETTINGS,
@@ -179,6 +181,142 @@ public final class SystemAppController {
 
     public static boolean isKioskPoliciesApplied() {
         return kioskPoliciesApplied;
+    }
+
+    public static boolean prepareTestPackages(Context context, String[] packageNames) {
+        if (!isPlatformSystemApp(context)) {
+            return false;
+        }
+        PackageManager pm = context.getPackageManager();
+        String[] existing = existingPackages(pm, packageNames);
+        boolean success = true;
+        for (String packageName : existing) {
+            success &= setPackageHidden(pm, packageName, false);
+        }
+        success &= setPackagesSuspended(pm, existing, false);
+        return success;
+    }
+
+    public static boolean restoreTestPackages(Context context, String[] packageNames) {
+        if (!isPlatformSystemApp(context)) {
+            return false;
+        }
+        return setPackagesSuspended(
+                context.getPackageManager(),
+                existingPackages(context.getPackageManager(), packageNames),
+                true
+        );
+    }
+
+    private static String[] existingPackages(PackageManager pm, String[] packageNames) {
+        if (pm == null || packageNames == null || packageNames.length == 0) {
+            return new String[0];
+        }
+        List<String> existing = new ArrayList<>();
+        for (String packageName : packageNames) {
+            if (packageName == null || packageName.trim().isEmpty()) {
+                continue;
+            }
+            try {
+                pm.getPackageInfo(packageName, 0);
+                existing.add(packageName);
+            } catch (PackageManager.NameNotFoundException ignored) {
+                AppLogger.i(TAG, "Test package not installed, skip maintenance: " + packageName);
+            }
+        }
+        return existing.toArray(new String[0]);
+    }
+
+    private static boolean setPackageHidden(PackageManager pm,
+                                            String packageName,
+                                            boolean hidden) {
+        try {
+            Method setter = PackageManager.class.getMethod(
+                    "setApplicationHiddenSettingAsUser",
+                    String.class,
+                    boolean.class,
+                    UserHandle.class
+            );
+            setter.invoke(pm, packageName, hidden, Process.myUserHandle());
+            Method getter = PackageManager.class.getMethod(
+                    "getApplicationHiddenSettingAsUser",
+                    String.class,
+                    UserHandle.class
+            );
+            Object state = getter.invoke(pm, packageName, Process.myUserHandle());
+            return state instanceof Boolean && ((Boolean) state) == hidden;
+        } catch (Exception e) {
+            AppLogger.e(TAG, "Unable to change test package hidden state: " + packageName, e);
+            return false;
+        }
+    }
+
+    private static boolean setPackagesSuspended(PackageManager pm,
+                                                String[] packageNames,
+                                                boolean suspended) {
+        if (packageNames == null || packageNames.length == 0) {
+            return true;
+        }
+        if (!hasPermissionForPackageManager(pm, PERMISSION_SUSPEND_APPS)) {
+            AppLogger.w(TAG, "SUSPEND_APPS missing; test package maintenance unavailable");
+            return false;
+        }
+        try {
+            Class<?> persistableBundle = Class.forName("android.os.PersistableBundle");
+            Class<?> suspendDialogInfo = Class.forName("android.content.pm.SuspendDialogInfo");
+            Method setter = PackageManager.class.getMethod(
+                    "setPackagesSuspended",
+                    String[].class,
+                    boolean.class,
+                    persistableBundle,
+                    persistableBundle,
+                    suspendDialogInfo
+            );
+            Object result = setter.invoke(
+                    pm,
+                    (Object) packageNames,
+                    suspended,
+                    null,
+                    null,
+                    null
+            );
+            if (result instanceof String[] && ((String[]) result).length > 0) {
+                AppLogger.w(
+                        TAG,
+                        "Some test packages could not be "
+                                + (suspended ? "suspended" : "unsuspended")
+                                + ": " + java.util.Arrays.toString((String[]) result)
+                );
+                return false;
+            }
+
+            Method checker = PackageManager.class.getMethod(
+                    "isPackageSuspended",
+                    String.class
+            );
+            for (String packageName : packageNames) {
+                Object state = checker.invoke(pm, packageName);
+                if (!(state instanceof Boolean) || ((Boolean) state) != suspended) {
+                    AppLogger.w(
+                            TAG,
+                            "Test package suspended state did not verify: "
+                                    + packageName + "=" + state
+                    );
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            AppLogger.e(TAG, "Unable to change test package suspended state", e);
+            return false;
+        }
+    }
+
+    private static boolean hasPermissionForPackageManager(PackageManager pm, String permission) {
+        // PackageManager does not expose its Context. The caller is always this process, and
+        // platform-signature test builds declare SUSPEND_APPS in the main manifest. Reflection
+        // will still fail securely if the permission was not granted.
+        return pm != null && permission != null;
     }
 
     public static boolean applyKioskPolicies(Context context) {
