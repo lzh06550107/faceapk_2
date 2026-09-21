@@ -10,7 +10,7 @@ Write-Host "=== APK path ==="
 
 Write-Host ""
 Write-Host "=== Package privileges ==="
-& $Adb shell dumpsys package $PackageName | Select-String -Pattern "WRITE_SECURE_SETTINGS|WRITE_SETTINGS|STATUS_BAR|INSTALL_PACKAGES|REBOOT|MANAGE_USERS|SET_PREFERRED_APPLICATIONS|GRANT_RUNTIME_PERMISSIONS"
+& $Adb shell dumpsys package $PackageName | Select-String -Pattern "WRITE_SECURE_SETTINGS|WRITE_SETTINGS|STATUS_BAR|INSTALL_PACKAGES|MANAGE_USERS|READ_PRIVILEGED_PHONE_STATE|SET_PREFERRED_APPLICATIONS|GRANT_RUNTIME_PERMISSIONS|START_ACTIVITIES_FROM_BACKGROUND"
 
 Write-Host ""
 Write-Host "=== HOME resolution ==="
@@ -29,3 +29,7 @@ Write-Host ""
 Write-Host "=== Screen timeout ==="
 & $Adb shell settings get system screen_off_timeout
 & $Adb shell settings get global stay_on_while_plugged_in
+
+Write-Host ""
+Write-Host "=== Persistent system app flag ==="
+& $Adb shell dumpsys package $PackageName | Select-String -Pattern "PERSISTENT|SYSTEM|UPDATED_SYSTEM_APP"
