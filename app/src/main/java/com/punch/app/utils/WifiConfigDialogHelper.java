@@ -221,8 +221,12 @@ public final class WifiConfigDialogHelper {
 
     private void connectConfiguredWifi(String ssid, String password, Button connectButton) {
         Context context = activity;
-        if (!KioskManager.isDeviceOwner(context)) {
-            Toast.makeText(context, "当前不是 Device Owner，无法静默配置 Wi-Fi", Toast.LENGTH_LONG).show();
+        if (!KioskManager.isManagedDevice(context)) {
+            Toast.makeText(
+                    context,
+                    "当前既不是 Android 12 System App，也不是 Device Owner，无法静默配置 Wi-Fi",
+                    Toast.LENGTH_LONG
+            ).show();
             return;
         }
         cancelPendingWifiConnectCheck();
@@ -269,8 +273,8 @@ public final class WifiConfigDialogHelper {
 
                 String message;
                 switch (result) {
-                    case NOT_DEVICE_OWNER:
-                        message = "设备未获得 Device Owner 权限，无法写入 Wi-Fi 配置";
+                    case NOT_MANAGED_DEVICE:
+                        message = "设备未获得 System App / Device Owner 管理能力，无法写入 Wi-Fi 配置";
                         break;
                     case WIFI_SERVICE_UNAVAILABLE:
                         message = "Wi-Fi 服务不可用";
