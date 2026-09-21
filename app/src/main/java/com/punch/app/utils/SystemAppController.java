@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.provider.Settings;
 import android.view.View;
 
 import java.lang.reflect.Field;
@@ -118,6 +119,10 @@ public final class SystemAppController {
                 missing.add(permission);
             }
         }
+        if (hasPermission(context, PERMISSION_WRITE_SETTINGS)
+                && !Settings.System.canWrite(context)) {
+            missing.add("WRITE_SETTINGS_appop");
+        }
         return missing;
     }
 
@@ -151,7 +156,8 @@ public final class SystemAppController {
 
     public static boolean canManageScreenSettings(Context context) {
         return canManageSystemSettings(context)
-                && hasPermission(context, PERMISSION_WRITE_SETTINGS);
+                && hasPermission(context, PERMISSION_WRITE_SETTINGS)
+                && Settings.System.canWrite(context);
     }
 
     public static boolean canInstallPackages(Context context) {
