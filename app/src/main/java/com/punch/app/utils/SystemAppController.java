@@ -17,7 +17,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -68,7 +70,7 @@ public final class SystemAppController {
     };
 
     private static volatile boolean kioskPoliciesApplied;
-    private static final AtomicBoolean homeRoleRequestInFlight = new AtomicBoolean(false);
+    private static final long HOME_ROLE_CHANGE_TIMEOUT_MS = 2_000L;
     @SuppressWarnings("deprecation")
     private static KeyguardManager.KeyguardLock keyguardLock;
 
@@ -333,9 +335,8 @@ public final class SystemAppController {
     private static boolean requestHomeRoleChange(Context context,
                                                  RoleManager roleManager,
                                                  boolean add) {
-        if (!homeRoleRequestInFlight.compareAndSet(false, true)) {
-            return true;
-        }
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicBoolean callbackSuccess = new AtomicBoolean(false);
         try {
             String methodName = add ? "addRoleHolderAsUser" : "removeRoleHolderAsUser";
             Method method = RoleManager.class.getMethod(
@@ -349,16 +350,8 @@ public final class SystemAppController {
             );
             Executor directExecutor = Runnable::run;
             Consumer<Boolean> callback = success -> {
-                homeRoleRequestInFlight.set(false);
-                AppLogger.i(
-                        TAG,
-                        "HOME role " + (add ? "grant" : "release")
-                                + " completed=" + Boolean.TRUE.equals(success)
-                );
-                if (add && Boolean.TRUE.equals(success)
-                        && !roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
-                    AppLogger.w(TAG, "HOME role callback succeeded but role is not held");
-                }
+                callbackSuccess.set(Boolean.TRUE.equals(success));
+                latch.countDown();
             };
             method.invoke(
                     roleManager,
@@ -369,10 +362,30 @@ public final class SystemAppController {
                     directExecutor,
                     callback
             );
-            AppLogger.i(TAG, "Requested HOME role " + (add ? "grant" : "release"));
-            return true;
+
+            boolean completed = latch.await(HOME_ROLE_CHANGE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            boolean held = roleManager.isRoleHeld(RoleManager.ROLE_HOME);
+            boolean finalState = add ? held : !held;
+            if (!completed) {
+                AppLogger.w(
+                        TAG,
+                        "HOME role " + (add ? "grant" : "release")
+                                + " timed out; finalState=" + finalState
+                );
+                return finalState;
+            }
+            boolean success = callbackSuccess.get() && finalState;
+            AppLogger.i(
+                    TAG,
+                    "HOME role " + (add ? "grant" : "release")
+                            + " completed=" + success
+            );
+            return success;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            AppLogger.w(TAG, "HOME role change interrupted");
+            return false;
         } catch (Exception e) {
-            homeRoleRequestInFlight.set(false);
             AppLogger.e(TAG, "Unable to change Android 12 HOME role", e);
             return false;
         }
