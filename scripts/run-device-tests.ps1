@@ -5,6 +5,9 @@ param(
     [int]$InstrumentationTimeoutSeconds = 180,
     [ValidateRange(5, 60)]
     [int]$MaintenanceReadyTimeoutSeconds = 15,
+    [string]$PlatformPk8,
+    [string]$PlatformX509Pem,
+    [string]$ApkSigner,
     [switch]$UseDeviceOwnerMaintenanceBridge,
     [switch]$StopProductionAppForSmoke
 )
@@ -48,6 +51,15 @@ try {
         "-InstrumentationTimeoutSeconds", $InstrumentationTimeoutSeconds.ToString(),
         "-MaintenanceReadyTimeoutSeconds", $MaintenanceReadyTimeoutSeconds.ToString()
     )
+    if (-not [string]::IsNullOrWhiteSpace($PlatformPk8)) {
+        $smokeArguments += @("-PlatformPk8", $PlatformPk8)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PlatformX509Pem)) {
+        $smokeArguments += @("-PlatformX509Pem", $PlatformX509Pem)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ApkSigner)) {
+        $smokeArguments += @("-ApkSigner", $ApkSigner)
+    }
     if ($UseDeviceOwnerMaintenanceBridge) {
         $smokeArguments += "-UseDeviceOwnerMaintenanceBridge"
     }
@@ -76,6 +88,7 @@ finally {
         "instrumentation_timeout_seconds=$InstrumentationTimeoutSeconds",
         "maintenance_ready_timeout_seconds=$MaintenanceReadyTimeoutSeconds",
         "use_device_owner_maintenance_bridge=$UseDeviceOwnerMaintenanceBridge",
+        "platform_signing_requested=$(-not [string]::IsNullOrWhiteSpace($PlatformPk8))",
         "stop_production_app_for_smoke=$StopProductionAppForSmoke",
         "report_directory=$reportDirectory",
         "finished_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')",
