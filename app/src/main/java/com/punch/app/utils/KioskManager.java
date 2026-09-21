@@ -61,6 +61,7 @@ public final class KioskManager {
         ensureOwnerKioskPolicies(activity);
         if (isSystemAppMode(activity)) {
             SystemAppController.applyActivityKioskUi(activity);
+            scheduleEnterRetryIfNeeded(activity, attempt);
             return;
         }
         if (!isLockTaskPermitted(activity)) {
