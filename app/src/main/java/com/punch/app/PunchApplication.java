@@ -144,7 +144,7 @@ public class PunchApplication extends Application {
         });
 
         SessionManager.get().init(this);
-        if (KioskManager.isDeviceOwner(this)) {
+        if (KioskManager.isManagedDevice(this)) {
             SessionManager.get().saveKioskEnabled(true);
             KioskManager.ensureOwnerKioskPolicies(this);
             startKioskForegroundWatchdog();
@@ -203,7 +203,7 @@ public class PunchApplication extends Application {
         public void run() {
             if (KioskManager.isDeviceTestMaintenanceModeForTest()
                     || !SessionManager.get().isKioskEnabled()
-                    || !KioskManager.isDeviceOwner(PunchApplication.this)) {
+                    || !KioskManager.isManagedDevice(PunchApplication.this)) {
                 kioskForegroundWatchdogRunning = false;
                 return;
             }
