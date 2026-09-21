@@ -97,3 +97,36 @@ System App 模式直接写 `Settings.System.SCREEN_OFF_TIMEOUT` 与 `Settings.Gl
 ## 13. Device Owner 兼容回退
 
 本分支暂不删除 `KioskDeviceAdminReceiver` 与 DevicePolicyManager 实现，以保留现有自动化测试和普通开发机兼容路径。生产 Android 12 System App 模式不会要求 Device Owner。
+
+## 14. 开机解锁约束
+
+当前 FaceAPK 不声明 Direct Boot，并继续使用现有 Session / 加密偏好 / 数据库启动链。专用打卡终端的生产 ROM 应保持“开机后无需用户输入锁屏凭据即可进入系统”的设备形态。
+
+如果 ROM 配置了 PIN / 密码等需要首次人工解锁的 secure credential，则 `BOOT_COMPLETED`、凭据加密数据以及 FaceAPK 完整业务恢复会受首次解锁时机影响。该设备形态不属于当前无人值守 Release Gate。
+
+## 15. Android 12 System App Release Gate
+
+刷入正式 system image 后，在 **不执行** `dpm set-device-owner` 和 **不执行** `pm grant WRITE_SECURE_SETTINGS` 的前提下逐项验收：
+
+1. 系统身份：APK 来自 system image / updated-system-app，且与 framework platform certificate 匹配。
+2. 权限：System App 权限自检无缺失；`WRITE_SETTINGS` AppOp 可写。
+3. HOME：`android.app.role.HOME` holder 为 `com.punch.app`，按 HOME 不离开 FaceAPK。
+4. Kiosk：状态栏不可下拉；Recent/Home/Back 不能逃出业务；导航栏保持隐藏/受控。
+5. 用户限制：安全模式、恢复出厂、添加用户、挂载物理介质限制生效。
+6. 息屏：默认 `screen_off_timeout=30000`，`stay_on_while_plugged_in=0`。
+7. NTP：目标 `ntp_server` 写入、`auto_time=1`，并禁止手工改日期时间。
+8. Wi-Fi：可扫描、保存、静默连接，并在断网/重启后自动重连。
+9. 设备身份：设备序列号读取正常，不需要 ADB 临时授权。
+10. 人脸业务：SDK 激活/初始化、人脸库准备、真实图片识别正常。
+11. 打卡链路：SQLite 本地落库、同步队列、真实服务器上传和回执正常。
+12. OTA：platform 同签名 APK 可后台安装且无确认页；更新后自动拉起并恢复业务。
+13. 重启恢复：冷启动/系统重启后自动回到 FaceAPK，HOME/Kiosk/NTP/息屏策略重新生效。
+14. 长稳：至少执行现有设备恢复/相机人脸/网络故障测试集，确认不会退回 Launcher 或系统界面。
+
+现场首先运行：
+
+```powershell
+scripts\verify-system-app-device.ps1
+```
+
+脚本检查通过只是静态/系统状态门禁；第 4、8、10、11、12、13、14 项仍必须在实际 Android 12 ROM 真机上验收。
