@@ -384,10 +384,15 @@ public final class WifiConfigDialogHelper {
         if (requestCode != REQUEST_WIFI_SCAN_PERMISSION) {
             return false;
         }
-        retryPendingWifiScanIfReady();
         if (!hasWifiScanPermission()) {
             showWifiPermissionSettingsDialog();
+            return true;
         }
+        if (!isLocationServiceEnabled()) {
+            showEnableLocationDialog();
+            return true;
+        }
+        retryPendingWifiScanIfReady();
         return true;
     }
 
