@@ -191,7 +191,7 @@ public final class SystemAppController {
         success &= makeKioskHomePreferred(context);
         success &= setStatusBarKioskState(context, true);
         disableKeyguard(context);
-        ScreenTimeoutPolicyManager.applyConfiguredPolicy(context);
+        success &= ScreenTimeoutPolicyManager.applyConfiguredPolicy(context).success;
         kioskPoliciesApplied = success;
         AppLogger.i(TAG, "Android 12 system-app kiosk policies applied=" + success);
         return success;
@@ -299,7 +299,16 @@ public final class SystemAppController {
             userManager.setUserRestriction(UserManager.DISALLOW_FACTORY_RESET, enabled);
             userManager.setUserRestriction(UserManager.DISALLOW_ADD_USER, enabled);
             userManager.setUserRestriction(UserManager.DISALLOW_MOUNT_PHYSICAL_MEDIA, enabled);
-            return true;
+            boolean verified =
+                    userManager.hasUserRestriction(UserManager.DISALLOW_SAFE_BOOT) == enabled
+                            && userManager.hasUserRestriction(UserManager.DISALLOW_FACTORY_RESET) == enabled
+                            && userManager.hasUserRestriction(UserManager.DISALLOW_ADD_USER) == enabled
+                            && userManager.hasUserRestriction(
+                            UserManager.DISALLOW_MOUNT_PHYSICAL_MEDIA) == enabled;
+            if (!verified) {
+                AppLogger.w(TAG, "System-app user restrictions did not verify");
+            }
+            return verified;
         } catch (RuntimeException e) {
             AppLogger.e(TAG, "Unable to apply system-app user restrictions", e);
             return false;
