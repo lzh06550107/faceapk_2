@@ -41,6 +41,26 @@ App 只在以下条件全部满足时启用 System App backend：Android API 31 
 
 将 `system-app/privapp-permissions-com.punch.app.xml` 复制到 `/system/etc/permissions/privapp-permissions-com.punch.app.xml`，并将 platform-signed APK 放到 `/system/priv-app/FaceAPK/FaceAPK.apk`。不要把 platform 私钥提交到本仓库。
 
+## 5.1 AOSP / Soong 集成模板
+
+仓库提供：
+
+```text
+system-app/Android.bp.example
+system-app/product-packages.mk.example
+```
+
+推荐 ROM 构建路径：
+
+1. Gradle 只负责产出未使用 ROM 私钥的 release APK；
+2. 将 APK 放进 AOSP 设备/vendor 目录并命名为 `FaceAPK-unsigned.apk`；
+3. 使用示例 `android_app_import`；
+4. 由 Soong 的 `certificate: "platform"` 使用 ROM 平台证书签名；
+5. `privileged: true` 安装到 priv-app；
+6. XML allowlist 作为 required 模块同步进入 `/system/etc/permissions`。
+
+这种方式比把 `platform.pk8` 放进应用仓库更适合正式 ROM 构建。
+
 ## 6. Platform 签名
 
 Gradle 项目不保存 ROM platform 私钥。Release APK 构建后使用 Android SDK `apksigner` 和 ROM 的 `platform.pk8`、`platform.x509.pem` 签名。仓库提供 `scripts/sign-platform-apk.ps1`。
