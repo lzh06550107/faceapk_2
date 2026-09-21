@@ -95,6 +95,11 @@ public final class SystemAppController {
                 && hasPermission(context, PERMISSION_WRITE_SECURE_SETTINGS);
     }
 
+    public static boolean canManageScreenSettings(Context context) {
+        return canManageSystemSettings(context)
+                && hasPermission(context, PERMISSION_WRITE_SETTINGS);
+    }
+
     public static boolean canInstallPackages(Context context) {
         return isPlatformSystemApp(context)
                 && hasPermission(context, PERMISSION_INSTALL_PACKAGES);
