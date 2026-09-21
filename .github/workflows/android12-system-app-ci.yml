@@ -35,6 +35,9 @@ jobs:
       - name: Assemble release APK
         run: ./gradlew assembleRelease --stacktrace
 
+      - name: Assemble managed-device test APKs
+        run: ./gradlew assembleDeviceOwnerTest assembleSmoke assembleSmokeAndroidTest --stacktrace
+
       - name: Validate system-app contract
         run: |
           python3 - <<'PY'
