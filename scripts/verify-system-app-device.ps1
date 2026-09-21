@@ -15,6 +15,11 @@ Write-Host "=== Package privileges ==="
 Write-Host ""
 Write-Host "=== HOME resolution ==="
 & $Adb shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME
+& $Adb shell cmd role get-role-holders android.app.role.HOME
+
+Write-Host ""
+Write-Host "=== WRITE_SETTINGS app-op ==="
+& $Adb shell appops get $PackageName WRITE_SETTINGS
 
 Write-Host ""
 Write-Host "=== Device Owner (expected: not required) ==="
