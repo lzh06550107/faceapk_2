@@ -26,6 +26,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
+import androidx.core.app.ActivityCompat;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Set;
 
 public final class WifiConfigDialogHelper {
+    public static final int REQUEST_WIFI_SCAN_PERMISSION = 4101;
     private static final long WIFI_CONNECT_TIMEOUT_MS = 15_000L;
     private static final long WIFI_CONNECT_POLL_INTERVAL_MS = 1_000L;
 
@@ -323,7 +325,11 @@ public final class WifiConfigDialogHelper {
         if (!hasWifiScanPermission()) {
             KioskManager.ensureOwnerRuntimePermissions(activity);
             if (!hasWifiScanPermission()) {
-                showWifiPermissionSettingsDialog();
+                if (KioskManager.isManagedDevice(activity)) {
+                    showManagedWifiPermissionFailureDialog();
+                } else {
+                    requestWifiScanPermissionForDevelopment();
+                }
                 return;
             }
         }
@@ -361,10 +367,61 @@ public final class WifiConfigDialogHelper {
                 .show();
     }
 
+    private void requestWifiScanPermissionForDevelopment() {
+        ActivityCompat.requestPermissions(
+                activity,
+                new String[]{
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                },
+                REQUEST_WIFI_SCAN_PERMISSION
+        );
+    }
+
+    public boolean onRequestPermissionsResult(int requestCode,
+                                              String[] permissions,
+                                              int[] grantResults) {
+        if (requestCode != REQUEST_WIFI_SCAN_PERMISSION) {
+            return false;
+        }
+        retryPendingWifiScanIfReady();
+        if (!hasWifiScanPermission()) {
+            showWifiPermissionSettingsDialog();
+        }
+        return true;
+    }
+
+    private void showManagedWifiPermissionFailureDialog() {
+        StringBuilder message = new StringBuilder();
+        message.append("当前管理模式：")
+                .append(KioskManager.managementModeLabel(activity))
+                .append("\n扫描附近 Wi-Fi 需要 ACCESS_FINE_LOCATION。\n");
+
+        if (KioskManager.isSystemAppMode(activity)) {
+            String missing = SystemAppController.describeMissingProductionPrivileges(activity);
+            if (missing == null || missing.trim().isEmpty()) {
+                message.append("System App 已识别，但自动授予定位权限失败。")
+                        .append("请检查系统镜像中的 platform 签名、运行时授权能力和日志。");
+            } else {
+                message.append("System App 权限自检缺失：")
+                        .append(missing)
+                        .append("。请修复 ROM/System App 权限配置。");
+            }
+        } else {
+            message.append("Device Owner 自动授予定位权限失败，请检查 DevicePolicyManager 状态。");
+        }
+
+        new AlertDialog.Builder(activity)
+                .setTitle("自动授权失败")
+                .setMessage(message.toString())
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
     private void showWifiPermissionSettingsDialog() {
         new AlertDialog.Builder(activity)
-                .setTitle("缺少权限")
-                .setMessage("扫描附近 Wi-Fi 需要定位权限。请在系统设置中授予后重试。")
+                .setTitle("需要精确位置权限")
+                .setMessage("当前为普通开发安装。Android 12 扫描附近 Wi-Fi 需要精确位置权限，请选择“使用应用时允许”并允许精确位置。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("去设置", (dialog, which) -> openAppPermissionSettings())
                 .show();
