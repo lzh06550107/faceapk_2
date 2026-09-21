@@ -80,6 +80,7 @@ public class UpdateInstallStateReceiver extends BroadcastReceiver {
                 message,
                 0
         );
+        UpdateManager.clearDurableRetry(context, "package_replaced");
         cancelLegacyActivityRelaunches(context);
         cancelRetryAlarm(context);
         InteractionLogger.logBusiness(

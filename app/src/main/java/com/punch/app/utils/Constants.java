@@ -43,6 +43,12 @@ public class Constants {
     public static final String KEY_UPDATE_INSTALL_MESSAGE = "update_install_message";
     public static final String KEY_UPDATE_INSTALL_RESULT_CODE = "update_install_result_code";
     public static final String KEY_UPDATE_INSTALL_STARTED_AT = "update_install_started_at";
+    public static final String KEY_UPDATE_RETRY_PENDING = "update_retry_pending";
+    public static final String KEY_UPDATE_RETRY_COUNT = "update_retry_count";
+    public static final String KEY_UPDATE_RETRY_NEXT_AT = "update_retry_next_at";
+    public static final String KEY_UPDATE_RETRY_LAST_ERROR = "update_retry_last_error";
+    public static final String KEY_UPDATE_RETRY_TARGET_VERSION = "update_retry_target_version";
+    public static final String KEY_UPDATE_RETRY_APK_URL = "update_retry_apk_url";
     public static final String KEY_UPDATE_AUTO_LAUNCH_SCHEDULED = "update_auto_launch_scheduled";
     public static final String KEY_UPDATE_AUTO_LAUNCH_COMPLETED = "update_auto_launch_completed";
     public static final String KEY_UPDATE_RELAUNCH_VERSION_CODE = "update_relaunch_version_code";
@@ -144,5 +150,5 @@ public class Constants {
     public static final String ACTIVATION_STATUS_DISABLED = "disabled";
 
     public static final String DB_NAME = "punch.db";
-    public static final int DB_VERSION = 10;
+    public static final int DB_VERSION = 12;
 }

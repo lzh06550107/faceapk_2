@@ -7,10 +7,13 @@ import android.util.Log;
 import com.baidu.idl.main.facesdk.FaceAuth;
 import com.baidu.idl.main.facesdk.FaceDetect;
 import com.baidu.idl.main.facesdk.FaceFeature;
+import com.baidu.idl.main.facesdk.FaceInfo;
 import com.baidu.idl.main.facesdk.FaceLive;
 import com.baidu.idl.main.facesdk.FaceMouthMask;
 import com.baidu.idl.main.facesdk.FaceSearch;
 import com.baidu.idl.main.facesdk.callback.Callback;
+import com.baidu.idl.main.facesdk.model.BDFaceImageInstance;
+import com.baidu.idl.main.facesdk.model.BDFaceInstance;
 import com.baidu.idl.main.facesdk.model.BDFaceSDKCommon;
 import com.baidu.idl.main.facesdk.model.BDFaceSDKConfig;
 import com.baidu.vis.facecollect.license.AndroidLicenser;
@@ -74,6 +77,10 @@ public class FaceSDKManager {
     private FaceSearch faceSearch;
     private FaceLive faceLive;
     private FaceMouthMask faceMouthMask;
+    private BDFaceInstance backgroundFaceInstance;
+    private FaceDetect backgroundFaceDetect;
+    private FaceFeature backgroundFaceFeature;
+    private final Object backgroundFaceOperationLock = new Object();
     private boolean modelLoading;
 
     private FaceSDKManager() {
@@ -107,7 +114,10 @@ public class FaceSDKManager {
                 && facePersonFeature != null
                 && faceSearch != null
                 && faceLive != null
-                && faceMouthMask != null;
+                && faceMouthMask != null
+                && backgroundFaceInstance != null
+                && backgroundFaceDetect != null
+                && backgroundFaceFeature != null;
     }
 
     private void initLicense(Context appContext, BDFaceSDKConfig config, SdkInitListener listener) {
@@ -392,6 +402,13 @@ public class FaceSDKManager {
         faceDetectPerson.loadConfig(sdkConfig);
 
         facePersonFeature = new FaceFeature();
+
+        backgroundFaceInstance = new BDFaceInstance();
+        backgroundFaceInstance.creatInstance();
+        backgroundFaceDetect = new FaceDetect(backgroundFaceInstance);
+        backgroundFaceDetect.loadConfig(sdkConfig);
+        backgroundFaceFeature = new FaceFeature(backgroundFaceInstance);
+
         faceSearch = new FaceSearch();
         faceLive = new FaceLive();
         faceMouthMask = new FaceMouthMask();
@@ -404,7 +421,7 @@ public class FaceSDKManager {
     }
 
     private void initCoreModels(Context context, SdkInitListener listener) {
-        AtomicInteger pending = new AtomicInteger(4);
+        AtomicInteger pending = new AtomicInteger(6);
         AtomicBoolean finished = new AtomicBoolean(false);
 
         faceDetectPerson.initModel(
@@ -431,6 +448,34 @@ public class FaceSDKManager {
                     @Override
                     public void onResponse(int code, String response) {
                         handleInitCallback("feature", code, response, pending, finished, listener);
+                    }
+                }
+        );
+
+        backgroundFaceDetect.initModel(
+                context,
+                DETECT_VIS_MODEL,
+                ALIGN_RGB_MODEL,
+                BDFaceSDKCommon.DetectType.DETECT_VIS,
+                BDFaceSDKCommon.AlignType.BDFACE_ALIGN_TYPE_RGB_ACCURATE,
+                new Callback() {
+                    @Override
+                    public void onResponse(int code, String response) {
+                        handleInitCallback("backgroundDetect", code, response, pending, finished, listener);
+                    }
+                }
+        );
+
+        backgroundFaceFeature.initModel(
+                context,
+                RECOGNIZE_IDPHOTO_MODEL,
+                RECOGNIZE_VIS_MODEL,
+                RECOGNIZE_NIR_MODEL,
+                "",
+                new Callback() {
+                    @Override
+                    public void onResponse(int code, String response) {
+                        handleInitCallback("backgroundFeature", code, response, pending, finished, listener);
                     }
                 }
         );
@@ -509,6 +554,41 @@ public class FaceSDKManager {
 
     private String safeMsg(String response) {
         return response == null ? "" : response;
+    }
+
+    public byte[] extractBackgroundFeature(BDFaceImageInstance imageInstance) {
+        if (imageInstance == null || !initModelSuccess) {
+            return null;
+        }
+        synchronized (backgroundFaceOperationLock) {
+            if (backgroundFaceDetect == null || backgroundFaceFeature == null) {
+                return null;
+            }
+            FaceInfo[] faceInfos = backgroundFaceDetect.detect(
+                    BDFaceSDKCommon.DetectType.DETECT_VIS,
+                    imageInstance
+            );
+            if (faceInfos == null || faceInfos.length == 0) {
+                return null;
+            }
+
+            byte[] feature = new byte[512];
+            float size = backgroundFaceFeature.feature(
+                    BDFaceSDKCommon.FeatureType.BDFACE_FEATURE_TYPE_LIVE_PHOTO,
+                    imageInstance,
+                    faceInfos[0].landmarks,
+                    feature
+            );
+            return size > 0 ? feature : null;
+        }
+    }
+
+    public void loadBackgroundConfig(BDFaceSDKConfig config) {
+        synchronized (backgroundFaceOperationLock) {
+            if (backgroundFaceDetect != null) {
+                backgroundFaceDetect.loadConfig(config != null ? config : new BDFaceSDKConfig());
+            }
+        }
     }
 
     public FaceDetect getFaceDetectPerson() {

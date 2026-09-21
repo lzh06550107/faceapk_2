@@ -36,6 +36,7 @@ import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -102,6 +103,10 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private TextView tvPunchStatusCurrent;
     private TextView tvPunchStatusToggle;
     private TextView tvPunchStatusHint;
+    private View layoutEmployeeSyncProgress;
+    private TextView tvEmployeeSyncTitle;
+    private TextView tvEmployeeSyncDetail;
+    private ProgressBar progressEmployeeSync;
     private Spinner spinnerShift;
     private Switch switchSpecialTime;
     private LinearLayout layoutResult;
@@ -217,6 +222,10 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         tvPunchStatusCurrent = view.findViewById(R.id.tv_punch_status_current);
         tvPunchStatusToggle = view.findViewById(R.id.tv_punch_status_toggle);
         tvPunchStatusHint = view.findViewById(R.id.tv_punch_status_hint);
+        layoutEmployeeSyncProgress = view.findViewById(R.id.layout_employee_sync_progress);
+        tvEmployeeSyncTitle = view.findViewById(R.id.tv_employee_sync_title);
+        tvEmployeeSyncDetail = view.findViewById(R.id.tv_employee_sync_detail);
+        progressEmployeeSync = view.findViewById(R.id.progress_employee_sync);
         spinnerShift = view.findViewById(R.id.spinner_shift);
         switchSpecialTime = view.findViewById(R.id.switch_special_time);
         layoutResult = view.findViewById(R.id.layout_result);
@@ -2109,8 +2118,33 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             }
         }
         renderStatusHistory(snapshot.recentEntries);
+        renderEmployeeSyncProgress(snapshot.employeeSyncProgress);
         updateStatusHistoryVisibility();
         showStatusPanel(true);
+    }
+
+    private void renderEmployeeSyncProgress(PunchApplication.EmployeeSyncProgress progress) {
+        if (layoutEmployeeSyncProgress == null
+                || tvEmployeeSyncTitle == null
+                || tvEmployeeSyncDetail == null
+                || progressEmployeeSync == null) {
+            return;
+        }
+        if (progress == null) {
+            layoutEmployeeSyncProgress.setVisibility(View.GONE);
+            return;
+        }
+
+        layoutEmployeeSyncProgress.setVisibility(View.VISIBLE);
+        tvEmployeeSyncTitle.setText(progress.title);
+        tvEmployeeSyncDetail.setText(progress.detail);
+        if (progress.progressPercent < 0) {
+            progressEmployeeSync.setIndeterminate(true);
+        } else {
+            progressEmployeeSync.setIndeterminate(false);
+            progressEmployeeSync.setMax(100);
+            progressEmployeeSync.setProgress(Math.max(0, Math.min(100, progress.progressPercent)));
+        }
     }
 
     private void bindStatusLevelChip(int level) {

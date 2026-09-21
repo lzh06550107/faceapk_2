@@ -15,6 +15,7 @@ import androidx.annotation.Nullable;
 import com.punch.app.network.InteractionLogger;
 import com.punch.app.network.ApiService;
 import com.punch.app.receiver.UpdateInstallStateReceiver;
+import com.punch.app.receiver.UpdateRetryReceiver;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -34,6 +35,7 @@ public final class UpdateManager {
     private static final String AUTO_UPDATE_DIR = "updates";
     private static final String AUTO_UPDATE_APK_NAME = "faceapk-auto-update.apk";
     private static final long INSTALL_PENDING_TIMEOUT_MS = 30 * 60 * 1000L;
+    private static final long AUTO_UPDATE_ATTEMPT_WATCHDOG_MS = 15 * 60 * 1000L;
     private static final ExecutorService AUTO_UPDATE_EXECUTOR = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean AUTO_UPDATE_RUNNING = new AtomicBoolean(false);
 
@@ -46,9 +48,13 @@ public final class UpdateManager {
         }
         Context appContext = context.getApplicationContext();
         reconcileInstallState(appContext);
-        clearTimedOutInstallPending(appContext);
+        if (clearTimedOutInstallPending(appContext)) {
+            return false;
+        }
+        reconcileRetryGeneration(appContext);
         String blockedReason = getAutoUpdateBlockedReason(appContext);
         if (!blockedReason.isEmpty()) {
+            handleBlockedAutoUpdateState(appContext, blockedReason);
             log("Auto update skipped", buildEligibilityDetail(appContext, blockedReason, reason));
             return false;
         }
@@ -56,6 +62,7 @@ public final class UpdateManager {
             log("Auto update skipped", "reason=already_running\ntrigger=" + safe(reason));
             return false;
         }
+        armAttemptWatchdog(appContext);
         AUTO_UPDATE_EXECUTOR.execute(() -> {
             try {
                 runBackgroundUpdate(appContext, reason);
@@ -95,6 +102,7 @@ public final class UpdateManager {
             return;
         }
         if (!KioskManager.isDeviceOwner(context)) {
+            clearDurableRetry(context, "device_not_owner");
             logFailure(
                     "Auto update skipped",
                     "reason=device_not_owner\n"
@@ -110,14 +118,15 @@ public final class UpdateManager {
         String apkUrl = resolveDownloadUrl(SessionManager.get().getUpdateApkUrl());
         File apkFile = buildAutoUpdateApkFile(context);
         if (apkFile == null) {
-            logFailure("Auto update download failed", "reason=update_dir_unavailable\ntrigger=" + safe(reason));
+            String detail = "reason=update_dir_unavailable\ntrigger=" + safe(reason);
+            logFailure("Auto update download failed", detail);
+            scheduleDurableRetry(context, "update_dir_unavailable", detail);
             return;
         }
         if (apkFile.exists() && !apkFile.delete()) {
-            logFailure(
-                    "Auto update download failed",
-                    "reason=old_apk_delete_failed\npath=" + apkFile.getAbsolutePath()
-            );
+            String detail = "reason=old_apk_delete_failed\npath=" + apkFile.getAbsolutePath();
+            logFailure("Auto update download failed", detail);
+            scheduleDurableRetry(context, "old_apk_delete_failed", detail);
             return;
         }
 
@@ -133,10 +142,12 @@ public final class UpdateManager {
         } catch (RuntimeException e) {
             String message = e.getClass().getSimpleName() + ": " + safe(e.getMessage());
             logFailure("Auto update download crashed", message + "\nurl=" + apkUrl);
+            scheduleDurableRetry(context, "download_crashed", message);
             return;
         }
         if (!downloaded) {
             logFailure("Auto update download failed", "url=" + apkUrl);
+            scheduleDurableRetry(context, "download_failed", "url=" + apkUrl);
             return;
         }
 
@@ -144,6 +155,7 @@ public final class UpdateManager {
                 ApkInstallValidator.validateUpdateApk(context, apkFile.getAbsolutePath());
         if (!validation.success) {
             markFailed(validation.message, Integer.MIN_VALUE);
+            clearDurableRetry(context, "apk_validation_failed");
             logFailure(
                     "Auto update APK validation failed",
                     validation.message + "\napkPath=" + apkFile.getAbsolutePath()
@@ -171,7 +183,10 @@ public final class UpdateManager {
         StartResult result = installWithPackageInstaller(context, apkFile.getAbsolutePath(), validation);
         if (!result.success) {
             logFailure("Auto update install submit failed", result.message);
+            scheduleDurableRetry(context, "install_submit_failed", result.message);
+            return;
         }
+        scheduleInstallPendingWatchdog(context);
     }
 
     public static StartResult startInstall(
@@ -266,6 +281,7 @@ public final class UpdateManager {
                     "Updated to " + safe(version),
                     status
             );
+            clearDurableRetry(context, "install_success");
             log("Device Owner install succeeded",
                     "sessionId=" + sessionId + "\nversion=" + safe(version));
             return;
@@ -277,6 +293,7 @@ public final class UpdateManager {
                     "Installer requires user action",
                     status
             );
+            clearDurableRetry(context, "installer_requires_user_action");
             logFailure("Device Owner install requires user action",
                     "sessionId=" + sessionId + "\nmessage=" + safe(statusMessage));
             return;
@@ -292,6 +309,11 @@ public final class UpdateManager {
                 "sessionId=" + sessionId
                         + "\nstatus=" + status
                         + "\nmessage=" + safe(statusMessage));
+        if (isRetryablePackageInstallerStatus(status)) {
+            scheduleDurableRetry(context, "installer_status_" + status, message);
+        } else {
+            clearDurableRetry(context, "installer_permanent_failure_" + status);
+        }
     }
 
     public static void reconcileInstallState(Context context) {
@@ -307,23 +329,24 @@ public final class UpdateManager {
                 "Updated to " + safe(version),
                 0
         );
+        clearDurableRetry(context, "install_reconciled");
         log("Install state reconciled by version check",
                 "version=" + safe(version)
                         + "\ntargetVersionCode="
                         + SessionManager.get().getUpdateInstallTargetVersionCode());
     }
 
-    private static void clearTimedOutInstallPending(Context context) {
+    private static boolean clearTimedOutInstallPending(Context context) {
         if (!SessionManager.get().isUpdateInstallPending()) {
-            return;
+            return false;
         }
         if (isInstalledVersionAtTarget(context)) {
-            return;
+            return false;
         }
         long startedAt = SessionManager.get().getUpdateInstallStartedAt();
         long elapsed = startedAt > 0L ? System.currentTimeMillis() - startedAt : Long.MAX_VALUE;
         if (elapsed < INSTALL_PENDING_TIMEOUT_MS) {
-            return;
+            return false;
         }
         String message = "Install result timed out";
         SessionManager.get().markUpdateInstallResult(
@@ -339,6 +362,124 @@ public final class UpdateManager {
                         + "\ntargetVersionCode="
                         + SessionManager.get().getUpdateInstallTargetVersionCode()
         );
+        scheduleDurableRetry(context, "install_pending_timeout", message);
+        return true;
+    }
+
+    private static void reconcileRetryGeneration(Context context) {
+        SessionManager session = SessionManager.get();
+        if (!session.isUpdateRetryPending()) {
+            return;
+        }
+        String retryTarget = safe(session.getUpdateRetryTargetVersion());
+        String retryUrl = safe(session.getUpdateRetryApkUrl());
+        String currentTarget = safe(session.getUpdateTargetVersion());
+        String currentUrl = safe(session.getUpdateApkUrl());
+        if (!retryTarget.equals(currentTarget) || !retryUrl.equals(currentUrl)) {
+            clearDurableRetry(context, "retry_generation_changed");
+        }
+    }
+
+    private static void handleBlockedAutoUpdateState(Context context, String blockedReason) {
+        if ("install_pending".equals(blockedReason)) {
+            scheduleInstallPendingWatchdog(context);
+            return;
+        }
+        if ("installed_version_not_lower_than_target".equals(blockedReason)
+                || "apk_url_empty".equals(blockedReason)
+                || "need_update_false".equals(blockedReason)) {
+            clearDurableRetry(context, "blocked_" + blockedReason);
+        }
+    }
+
+    private static void scheduleInstallPendingWatchdog(Context context) {
+        SessionManager session = SessionManager.get();
+        if (!session.isUpdateInstallPending()) {
+            return;
+        }
+        long startedAt = session.getUpdateInstallStartedAt();
+        long nextAt = startedAt > 0L
+                ? startedAt + INSTALL_PENDING_TIMEOUT_MS
+                : System.currentTimeMillis() + INSTALL_PENDING_TIMEOUT_MS;
+        UpdateRetryReceiver.schedule(
+                context,
+                nextAt,
+                session.getUpdateTargetVersion(),
+                session.getUpdateApkUrl()
+        );
+    }
+
+    private static void armAttemptWatchdog(Context context) {
+        SessionManager session = SessionManager.get();
+        String targetVersion = safe(session.getUpdateTargetVersion());
+        String apkUrl = safe(session.getUpdateApkUrl());
+        if (apkUrl.isEmpty()) {
+            return;
+        }
+        boolean sameGeneration = session.isUpdateRetryPending()
+                && targetVersion.equals(safe(session.getUpdateRetryTargetVersion()))
+                && apkUrl.equals(safe(session.getUpdateRetryApkUrl()));
+        int retryCount = sameGeneration ? session.getUpdateRetryCount() : 0;
+        long nextAt = System.currentTimeMillis() + AUTO_UPDATE_ATTEMPT_WATCHDOG_MS;
+        session.saveUpdateRetryState(
+                retryCount,
+                nextAt,
+                "attempt_watchdog",
+                targetVersion,
+                apkUrl
+        );
+        UpdateRetryReceiver.schedule(context, nextAt, targetVersion, apkUrl);
+    }
+
+    private static void scheduleDurableRetry(Context context, String reason, String error) {
+        if (context == null) {
+            return;
+        }
+        SessionManager session = SessionManager.get();
+        String targetVersion = safe(session.getUpdateTargetVersion());
+        String apkUrl = safe(session.getUpdateApkUrl());
+        if (apkUrl.isEmpty()) {
+            clearDurableRetry(context, "retry_generation_missing");
+            return;
+        }
+        boolean sameGeneration = session.isUpdateRetryPending()
+                && targetVersion.equals(safe(session.getUpdateRetryTargetVersion()))
+                && apkUrl.equals(safe(session.getUpdateRetryApkUrl()));
+        int nextCount = UpdateRetryPolicy.nextFailureCount(
+                session.getUpdateRetryCount(),
+                sameGeneration
+        );
+        long delayMs = UpdateRetryPolicy.delayMsForFailureCount(nextCount);
+        long nextAt = System.currentTimeMillis() + delayMs;
+        String lastError = safe(reason) + ": " + safe(error);
+        session.saveUpdateRetryState(
+                nextCount,
+                nextAt,
+                lastError,
+                targetVersion,
+                apkUrl
+        );
+        UpdateRetryReceiver.schedule(context, nextAt, targetVersion, apkUrl);
+        log(
+                "OTA durable retry scheduled",
+                "reason=" + safe(reason)
+                        + "\nretryCount=" + nextCount
+                        + "\ndelayMs=" + delayMs
+                        + "\nnextAt=" + nextAt
+                        + "\ntargetVersion=" + targetVersion
+        );
+    }
+
+    public static void clearDurableRetry(Context context, String reason) {
+        SessionManager.get().clearUpdateRetryState();
+        UpdateRetryReceiver.cancel(context);
+        log("OTA durable retry cleared", "reason=" + safe(reason));
+    }
+
+    private static boolean isRetryablePackageInstallerStatus(int status) {
+        return status == PackageInstaller.STATUS_FAILURE
+                || status == PackageInstaller.STATUS_FAILURE_ABORTED
+                || status == PackageInstaller.STATUS_FAILURE_STORAGE;
     }
 
     public static boolean isInstalledVersionAtTarget(Context context) {

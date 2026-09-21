@@ -20,8 +20,6 @@ public class FaceRegistrationManager {
     private static FaceRegistrationManager instance;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(
-            ParallelDownloadBatchRunner.DEFAULT_DOWNLOAD_PARALLELISM);
 
     public static FaceRegistrationManager get() {
         if (instance == null) {
@@ -68,10 +66,74 @@ public class FaceRegistrationManager {
         });
     }
 
+    public void prepareEmployeesForPersistence(Context ctx,
+                                               List<Employee> employees,
+                                               PreparedCallback callback) {
+        prepareEmployeesForPersistence(ctx, employees, null, callback);
+    }
+
+    public void prepareEmployeesForPersistence(Context ctx,
+                                               List<Employee> employees,
+                                               PreparedProgressCallback progressCallback,
+                                               PreparedCallback callback) {
+        executor.execute(() -> {
+            List<PreparedFaceResult> results = prepareEmployeesInternal(ctx, employees, progressCallback);
+            if (callback != null) {
+                callback.onDone(results);
+            }
+        });
+    }
+
+    private List<PreparedFaceResult> prepareEmployeesInternal(Context ctx,
+                                                              List<Employee> employees,
+                                                              PreparedProgressCallback progressCallback) {
+        List<PreparedFaceResult> results = new ArrayList<>();
+        if (employees == null) {
+            return results;
+        }
+        for (Employee emp : employees) {
+            if (emp == null || emp.id == null || emp.id.trim().isEmpty()) {
+                continue;
+            }
+            PreparedFaceResult result = prepareSingleForPersistence(ctx, emp);
+            results.add(result);
+            if (progressCallback != null) {
+                try {
+                    progressCallback.onPrepared(result);
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "prepare progress callback failed", e);
+                }
+            }
+        }
+        return results;
+    }
+
+    private PreparedFaceResult prepareSingleForPersistence(Context ctx, Employee emp) {
+        if (emp.faceImageUrl == null || emp.faceImageUrl.trim().isEmpty()) {
+            return PreparedFaceResult.fail(emp.id, FAIL_MSG_FACE_IMAGE_URL_EMPTY);
+        }
+        FaceFileManager.DownloadResult downloadResult = FaceFileManager.downloadAndVerify(
+                ctx, emp.id, emp.faceImageUrl, emp.faceImageSha256);
+        if (!downloadResult.success) {
+            String failMsg = downloadResult.failMsg == null || downloadResult.failMsg.trim().isEmpty()
+                    ? FAIL_MSG_FACE_IMAGE_DOWNLOAD_FAILED
+                    : downloadResult.failMsg.trim();
+            return PreparedFaceResult.fail(emp.id, failMsg);
+        }
+        FaceManager.FeatureResult featureResult = FaceManager.get()
+                .extractFeatureForPersistence(emp.id, downloadResult.path);
+        if (!featureResult.success) {
+            String failMsg = featureResult.errorMsg == null || featureResult.errorMsg.trim().isEmpty()
+                    ? FAIL_MSG_FACE_IMAGE_INVALID
+                    : featureResult.errorMsg.trim();
+            return PreparedFaceResult.fail(emp.id, failMsg);
+        }
+        return PreparedFaceResult.ok(emp.id, featureResult.feature);
+    }
+
     public void refreshEmployee(Context ctx, Employee emp, Callback callback) {
         executor.execute(() -> {
             FaceManager.get().removeFace(emp.id);
-            DatabaseHelper.get(ctx).deleteFaceFeature(emp.id);
             DatabaseHelper.get(ctx).updateFaceRegistration(emp.id, null, false);
             RegistrationResult result = registerSingle(ctx, emp, true);
             boolean success = result.success;
@@ -84,82 +146,42 @@ public class FaceRegistrationManager {
     private List<RegistrationResult> registerEmployeesInternal(Context ctx,
                                                               List<Employee> employees,
                                                               boolean addToRuntimeLibrary) {
-        List<Employee> validEmployees = new ArrayList<>();
+        List<RegistrationResult> results = new ArrayList<>();
         if (employees == null) {
-            return new ArrayList<>();
+            return results;
         }
         for (Employee emp : employees) {
             if (emp == null || emp.id == null || emp.id.trim().isEmpty()) {
                 continue;
             }
-            validEmployees.add(emp);
+            results.add(registerSingle(ctx, emp, addToRuntimeLibrary));
         }
-        if (validEmployees.isEmpty()) {
-            return new ArrayList<>();
-        }
-
-        long startedAt = System.currentTimeMillis();
-        Log.i(TAG, "Face batch begin: employees=" + validEmployees.size()
-                + " downloadParallelism=" + ParallelDownloadBatchRunner.DEFAULT_DOWNLOAD_PARALLELISM
-                + " faceSdkSerial=true");
-        long[] batchMetrics = new long[2];
-        List<RegistrationResult> results = ParallelDownloadBatchRunner.run(
-                validEmployees,
-                downloadExecutor,
-                emp -> downloadFaceImage(ctx, emp),
-                (emp, downloadResult) -> registerDownloadedFace(
-                        ctx, emp, downloadResult, addToRuntimeLibrary),
-                (emp, error) -> {
-                    Log.e(TAG, "Face image preparation crashed: empId=" + emp.id, error);
-                    return RegistrationResult.fail(emp.id, FAIL_MSG_FACE_IMAGE_DOWNLOAD_FAILED);
-                },
-                (downloadWaitMs, processMs) -> {
-                    batchMetrics[0] = downloadWaitMs;
-                    batchMetrics[1] = processMs;
-                }
-        );
-        Log.i(TAG, "Face batch end: employees=" + validEmployees.size()
-                + " elapsedMs=" + (System.currentTimeMillis() - startedAt)
-                + " download_wait_ms=" + batchMetrics[0]
-                + " face_process_ms=" + batchMetrics[1]);
         return results;
     }
 
     private RegistrationResult registerSingle(Context ctx, Employee emp, boolean addToRuntimeLibrary) {
-        FaceFileManager.DownloadResult downloadResult = downloadFaceImage(ctx, emp);
-        return registerDownloadedFace(ctx, emp, downloadResult, addToRuntimeLibrary);
-    }
-
-    private FaceFileManager.DownloadResult downloadFaceImage(Context ctx, Employee emp) {
         if (emp.faceImageUrl == null || emp.faceImageUrl.trim().isEmpty()) {
             Log.w(TAG, "Face image url is empty: empId=" + emp.id);
-            return FaceFileManager.DownloadResult.fail(FAIL_MSG_FACE_IMAGE_URL_EMPTY);
+            return failRegistration(ctx, emp, FAIL_MSG_FACE_IMAGE_URL_EMPTY, addToRuntimeLibrary);
         }
-        return FaceFileManager.downloadAndVerify(
+
+        FaceFileManager.DownloadResult downloadResult = FaceFileManager.downloadAndVerify(
                 ctx,
                 emp.id,
                 emp.faceImageUrl,
                 emp.faceImageSha256
         );
-    }
-
-    private RegistrationResult registerDownloadedFace(Context ctx,
-                                                      Employee emp,
-                                                      FaceFileManager.DownloadResult downloadResult,
-                                                      boolean addToRuntimeLibrary) {
-        if (downloadResult == null || !downloadResult.success) {
-            String failMsg = downloadResult == null
-                    || downloadResult.failMsg == null
-                    || downloadResult.failMsg.trim().isEmpty()
+        if (!downloadResult.success) {
+            String failMsg = downloadResult.failMsg == null || downloadResult.failMsg.trim().isEmpty()
                     ? FAIL_MSG_FACE_IMAGE_DOWNLOAD_FAILED
                     : downloadResult.failMsg.trim();
             Log.w(TAG, "Download/verify failed: empId=" + emp.id + " reason=" + failMsg);
-            return RegistrationResult.fail(emp.id, failMsg);
+            return failRegistration(ctx, emp, failMsg, addToRuntimeLibrary);
         }
 
         FaceManager.RegisterResult result = addToRuntimeLibrary
-                ? FaceManager.get().registerFace(ctx, emp, downloadResult.path)
-                : FaceManager.get().validateFaceImage(ctx, emp, downloadResult.path);
+                ? FaceManager.get().registerFace(ctx, emp.id, downloadResult.path)
+                : FaceManager.get().validateFaceImage(ctx, emp.id, downloadResult.path);
         if (result.success) {
             DatabaseHelper.get(ctx).updateFaceRegistration(emp.id, result.localFaceId, true);
             return RegistrationResult.ok(emp.id);
@@ -169,6 +191,17 @@ public class FaceRegistrationManager {
         String failMsg = result.errorMsg != null && !result.errorMsg.trim().isEmpty()
                 ? result.errorMsg.trim()
                 : FAIL_MSG_FACE_IMAGE_INVALID;
+        return failRegistration(ctx, emp, failMsg, addToRuntimeLibrary);
+    }
+
+    private RegistrationResult failRegistration(Context ctx,
+                                                Employee emp,
+                                                String failMsg,
+                                                boolean addToRuntimeLibrary) {
+        if (addToRuntimeLibrary) {
+            FaceManager.get().removeFace(emp.id);
+            DatabaseHelper.get(ctx).updateFaceRegistration(emp.id, null, false);
+        }
         return RegistrationResult.fail(emp.id, failMsg);
     }
 
@@ -190,6 +223,36 @@ public class FaceRegistrationManager {
             }
         }
         return count;
+    }
+
+    public interface PreparedProgressCallback {
+        void onPrepared(PreparedFaceResult result);
+    }
+
+    public interface PreparedCallback {
+        void onDone(List<PreparedFaceResult> results);
+    }
+
+    public static final class PreparedFaceResult {
+        public final String empId;
+        public final boolean success;
+        public final String failMsg;
+        public final byte[] feature;
+
+        private PreparedFaceResult(String empId, boolean success, String failMsg, byte[] feature) {
+            this.empId = empId;
+            this.success = success;
+            this.failMsg = failMsg == null ? "" : failMsg;
+            this.feature = feature;
+        }
+
+        public static PreparedFaceResult ok(String empId, byte[] feature) {
+            return new PreparedFaceResult(empId, true, "", feature);
+        }
+
+        public static PreparedFaceResult fail(String empId, String failMsg) {
+            return new PreparedFaceResult(empId, false, failMsg, null);
+        }
     }
 
     public interface Callback {

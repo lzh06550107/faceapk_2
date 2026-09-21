@@ -11,8 +11,8 @@ android {
         applicationId "com.punch.app"
         minSdk 24
         targetSdk 34
-        versionCode 117
-        versionName "1.1.7"
+        versionCode 200
+        versionName "2.0.0"
         multiDexEnabled true
         testInstrumentationRunner "com.punch.app.test.UiSmokeTestRunner"
 

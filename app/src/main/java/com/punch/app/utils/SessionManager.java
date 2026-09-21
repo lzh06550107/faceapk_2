@@ -553,6 +553,59 @@ public class SessionManager {
         return prefs.getString(Constants.KEY_UPDATE_VERSION_NAME, "");
     }
 
+    public void saveUpdateRetryState(int retryCount,
+                                     long nextRetryAt,
+                                     String lastError,
+                                     String targetVersion,
+                                     String apkUrl) {
+        prefs.edit()
+                .putBoolean(Constants.KEY_UPDATE_RETRY_PENDING, true)
+                .putInt(Constants.KEY_UPDATE_RETRY_COUNT, Math.max(0, retryCount))
+                .putLong(Constants.KEY_UPDATE_RETRY_NEXT_AT, Math.max(0L, nextRetryAt))
+                .putString(Constants.KEY_UPDATE_RETRY_LAST_ERROR,
+                        lastError == null ? "" : lastError.trim())
+                .putString(Constants.KEY_UPDATE_RETRY_TARGET_VERSION,
+                        targetVersion == null ? "" : targetVersion.trim())
+                .putString(Constants.KEY_UPDATE_RETRY_APK_URL,
+                        apkUrl == null ? "" : apkUrl.trim())
+                .commit();
+    }
+
+    public boolean isUpdateRetryPending() {
+        return prefs.getBoolean(Constants.KEY_UPDATE_RETRY_PENDING, false);
+    }
+
+    public int getUpdateRetryCount() {
+        return Math.max(0, prefs.getInt(Constants.KEY_UPDATE_RETRY_COUNT, 0));
+    }
+
+    public long getUpdateRetryNextAt() {
+        return Math.max(0L, prefs.getLong(Constants.KEY_UPDATE_RETRY_NEXT_AT, 0L));
+    }
+
+    public String getUpdateRetryLastError() {
+        return prefs.getString(Constants.KEY_UPDATE_RETRY_LAST_ERROR, "");
+    }
+
+    public String getUpdateRetryTargetVersion() {
+        return prefs.getString(Constants.KEY_UPDATE_RETRY_TARGET_VERSION, "");
+    }
+
+    public String getUpdateRetryApkUrl() {
+        return prefs.getString(Constants.KEY_UPDATE_RETRY_APK_URL, "");
+    }
+
+    public void clearUpdateRetryState() {
+        prefs.edit()
+                .putBoolean(Constants.KEY_UPDATE_RETRY_PENDING, false)
+                .remove(Constants.KEY_UPDATE_RETRY_COUNT)
+                .remove(Constants.KEY_UPDATE_RETRY_NEXT_AT)
+                .remove(Constants.KEY_UPDATE_RETRY_LAST_ERROR)
+                .remove(Constants.KEY_UPDATE_RETRY_TARGET_VERSION)
+                .remove(Constants.KEY_UPDATE_RETRY_APK_URL)
+                .commit();
+    }
+
     public void markUpdateInstallStarted(String apkPath, String targetVersion) {
         markUpdateInstallStarted(apkPath, targetVersion, 0L);
     }

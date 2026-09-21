@@ -6,7 +6,6 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
-import com.punch.app.face.FaceFeatureCachePolicy;
 import com.punch.app.model.Employee;
 import com.punch.app.model.PunchRecord;
 import com.punch.app.model.SyncQueueItem;
@@ -17,14 +16,19 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 
 public class DatabaseHelper extends SQLiteOpenHelper {
 
+    private static final int FACE_FEATURE_QUERY_BATCH_SIZE = 400;
+    private static final int FACE_SDK_ID_QUERY_BATCH_SIZE = 400;
     private static DatabaseHelper instance;
     private static String databaseNameOverrideForTest;
     private final Context appContext;
     private final FaceSdkIdRegistry faceSdkIdRegistry;
+    private final Object faceSdkIdAllocationLock = new Object();
 
 
     public static synchronized DatabaseHelper get(Context ctx) {
@@ -103,6 +107,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_emp_line ON employees(assigned_line_code)");
         createFaceSdkIdsTable(db);
         createFaceFeaturesTable(db);
+        createFaceApplyTasksTable(db);
         createPunchRecordIndexes(db);
     }
 
@@ -135,10 +140,106 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         if (oldVersion < 10) {
             createFaceFeaturesTable(db);
         }
+        if (oldVersion < 11) {
+            createFaceApplyTasksTable(db);
+        }
+        if (oldVersion < 12) {
+            createFaceApplyTasksTable(db);
+            addColumnIfMissing(db, "face_apply_tasks", "state", "TEXT NOT NULL DEFAULT 'PENDING'");
+            addColumnIfMissing(db, "face_apply_tasks", "next_retry_at", "INTEGER NOT NULL DEFAULT 0");
+        }
     }
 
     public int getOrCreateFaceSdkId(String employeeId) {
-        return faceSdkIdRegistry.getOrCreate(employeeId);
+        synchronized (faceSdkIdAllocationLock) {
+            return faceSdkIdRegistry.getOrCreate(employeeId);
+        }
+    }
+
+    public Map<String, Integer> getOrCreateFaceSdkIds(List<String> employeeIds) {
+        Map<String, Integer> result = new LinkedHashMap<>();
+        if (employeeIds == null || employeeIds.isEmpty()) {
+            return result;
+        }
+
+        List<String> cleanIds = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (String employeeId : employeeIds) {
+            if (employeeId == null) {
+                continue;
+            }
+            String cleanId = employeeId.trim();
+            if (!cleanId.isEmpty() && seen.add(cleanId)) {
+                cleanIds.add(cleanId);
+            }
+        }
+        if (cleanIds.isEmpty()) {
+            return result;
+        }
+
+        synchronized (faceSdkIdAllocationLock) {
+            result.putAll(findFaceSdkIds(cleanIds));
+            if (result.size() == cleanIds.size()) {
+                return result;
+            }
+
+            SQLiteDatabase db = getWritableDatabase();
+            db.beginTransaction();
+            try {
+                // Re-read inside the write transaction so allocation starts from the latest durable state.
+                result.clear();
+                result.putAll(findFaceSdkIds(db, cleanIds));
+                int nextId = findMaxFaceSdkId(db);
+                for (String employeeId : cleanIds) {
+                    if (result.containsKey(employeeId)) {
+                        continue;
+                    }
+                    if (nextId == Integer.MAX_VALUE) {
+                        throw new IllegalStateException("Face SDK ID space exhausted");
+                    }
+                    nextId += 1;
+                    if (!insertFaceSdkId(db, employeeId, nextId)) {
+                        throw new IllegalStateException("Unable to allocate Face SDK ID: " + employeeId);
+                    }
+                    result.put(employeeId, nextId);
+                }
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
+        }
+        return result;
+    }
+
+    private Map<String, Integer> findFaceSdkIds(List<String> employeeIds) {
+        return findFaceSdkIds(getReadableDatabase(), employeeIds);
+    }
+
+    private Map<String, Integer> findFaceSdkIds(SQLiteDatabase db, List<String> employeeIds) {
+        Map<String, Integer> result = new LinkedHashMap<>();
+        for (int start = 0; start < employeeIds.size(); start += FACE_SDK_ID_QUERY_BATCH_SIZE) {
+            int end = Math.min(start + FACE_SDK_ID_QUERY_BATCH_SIZE, employeeIds.size());
+            StringBuilder placeholders = new StringBuilder();
+            String[] args = new String[end - start];
+            for (int i = start; i < end; i++) {
+                if (placeholders.length() > 0) {
+                    placeholders.append(',');
+                }
+                placeholders.append('?');
+                args[i - start] = employeeIds.get(i);
+            }
+            Cursor c = db.rawQuery(
+                    "SELECT emp_id, sdk_id FROM face_sdk_ids WHERE emp_id IN (" + placeholders + ")",
+                    args);
+            try {
+                while (c.moveToNext()) {
+                    result.put(c.getString(0), c.getInt(1));
+                }
+            } finally {
+                c.close();
+            }
+        }
+        return result;
     }
 
     private Integer findFaceSdkId(String employeeId) {
@@ -153,7 +254,11 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     }
 
     private int findMaxFaceSdkId() {
-        Cursor c = getReadableDatabase().rawQuery(
+        return findMaxFaceSdkId(getReadableDatabase());
+    }
+
+    private int findMaxFaceSdkId(SQLiteDatabase db) {
+        Cursor c = db.rawQuery(
                 "SELECT COALESCE(MAX(sdk_id), 0) FROM face_sdk_ids", null);
         try {
             return c.moveToFirst() ? c.getInt(0) : 0;
@@ -163,16 +268,120 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     }
 
     private boolean insertFaceSdkId(String employeeId, int sdkId) {
+        return insertFaceSdkId(getWritableDatabase(), employeeId, sdkId);
+    }
+
+    private boolean insertFaceSdkId(SQLiteDatabase db, String employeeId, int sdkId) {
         ContentValues values = new ContentValues();
         values.put("emp_id", employeeId);
         values.put("sdk_id", sdkId);
-        return getWritableDatabase().insertWithOnConflict(
+        return db.insertWithOnConflict(
                 "face_sdk_ids", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1;
     }
 
     private void createFaceSdkIdsTable(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE IF NOT EXISTS face_sdk_ids (" +
                 "emp_id TEXT PRIMARY KEY, sdk_id INTEGER NOT NULL UNIQUE CHECK(sdk_id > 0))");
+    }
+
+    public byte[] getValidFaceFeature(String empId,
+                                      int faceVersion,
+                                      String imageSha256,
+                                      int featureSchemaVersion) {
+        if (empId == null || empId.trim().isEmpty()) {
+            return null;
+        }
+        String safeSha256 = imageSha256 == null ? "" : imageSha256.trim();
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT feature FROM face_features " +
+                        "WHERE emp_id=? AND face_version=? " +
+                        "AND COALESCE(image_sha256, '')=? AND feature_schema_version=? LIMIT 1",
+                new String[]{
+                        empId.trim(),
+                        String.valueOf(faceVersion),
+                        safeSha256,
+                        String.valueOf(featureSchemaVersion)
+                });
+        try {
+            if (!c.moveToFirst()) {
+                return null;
+            }
+            byte[] feature = c.getBlob(0);
+            return feature != null && feature.length == 512 ? feature : null;
+        } finally {
+            c.close();
+        }
+    }
+
+    public Map<String, FaceFeatureCacheEntry> getFaceFeaturesByEmployeeIds(List<String> empIds) {
+        Map<String, FaceFeatureCacheEntry> result = new LinkedHashMap<>();
+        if (empIds == null || empIds.isEmpty()) {
+            return result;
+        }
+
+        List<String> cleanIds = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (String empId : empIds) {
+            if (empId == null) {
+                continue;
+            }
+            String cleanId = empId.trim();
+            if (!cleanId.isEmpty() && seen.add(cleanId)) {
+                cleanIds.add(cleanId);
+            }
+        }
+
+        SQLiteDatabase db = getReadableDatabase();
+        for (int start = 0; start < cleanIds.size(); start += FACE_FEATURE_QUERY_BATCH_SIZE) {
+            int end = Math.min(start + FACE_FEATURE_QUERY_BATCH_SIZE, cleanIds.size());
+            StringBuilder placeholders = new StringBuilder();
+            String[] args = new String[end - start];
+            for (int i = start; i < end; i++) {
+                if (placeholders.length() > 0) {
+                    placeholders.append(',');
+                }
+                placeholders.append('?');
+                args[i - start] = cleanIds.get(i);
+            }
+
+            Cursor c = db.rawQuery(
+                    "SELECT emp_id, face_version, COALESCE(image_sha256, ''), " +
+                            "feature_schema_version, feature FROM face_features " +
+                            "WHERE emp_id IN (" + placeholders + ")",
+                    args);
+            try {
+                while (c.moveToNext()) {
+                    String empId = c.getString(0);
+                    result.put(empId, new FaceFeatureCacheEntry(
+                            c.getInt(1),
+                            c.getString(2),
+                            c.getInt(3),
+                            c.getBlob(4)));
+                }
+            } finally {
+                c.close();
+            }
+        }
+        return result;
+    }
+
+    public boolean upsertFaceFeature(String empId,
+                                     int faceVersion,
+                                     String imageSha256,
+                                     int featureSchemaVersion,
+                                     byte[] feature) {
+        if (empId == null || empId.trim().isEmpty() || feature == null || feature.length != 512) {
+            return false;
+        }
+        ContentValues values = new ContentValues();
+        values.put("emp_id", empId.trim());
+        values.put("face_version", faceVersion);
+        values.put("image_sha256", imageSha256 == null ? "" : imageSha256.trim());
+        values.put("feature_schema_version", featureSchemaVersion);
+        values.put("feature", feature);
+        values.put("updated_at", System.currentTimeMillis());
+        return getWritableDatabase().insertWithOnConflict(
+                "face_features", null, values, SQLiteDatabase.CONFLICT_REPLACE) != -1;
     }
 
     private void createFaceFeaturesTable(SQLiteDatabase db) {
@@ -182,72 +391,361 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                 "image_sha256 TEXT NOT NULL DEFAULT '', " +
                 "feature_schema_version INTEGER NOT NULL, " +
                 "feature BLOB NOT NULL, " +
-                "updated_at INTEGER NOT NULL)");
+                "updated_at INTEGER NOT NULL DEFAULT 0)");
     }
 
-    public void saveFaceFeature(String empId,
-                                int faceVersion,
-                                String imageSha256,
-                                int featureSchemaVersion,
-                                byte[] feature) {
-        if (empId == null || empId.trim().isEmpty()
-                || feature == null
-                || feature.length != FaceFeatureCachePolicy.FEATURE_LENGTH) {
-            return;
+    private void createFaceApplyTasksTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS face_apply_tasks (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "emp_id TEXT NOT NULL UNIQUE, " +
+                "operation TEXT NOT NULL, " +
+                "face_version INTEGER NOT NULL DEFAULT 0, " +
+                "state TEXT NOT NULL DEFAULT 'PENDING', " +
+                "retry_count INTEGER NOT NULL DEFAULT 0, " +
+                "next_retry_at INTEGER NOT NULL DEFAULT 0, " +
+                "last_error TEXT NOT NULL DEFAULT '', " +
+                "updated_at INTEGER NOT NULL DEFAULT 0)");
+    }
+
+    public boolean commitEmployeeFaceBatch(List<FaceBatchWrite> writes) {
+        if (writes == null || writes.isEmpty()) {
+            return true;
+        }
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (FaceBatchWrite write : writes) {
+                if (write == null) {
+                    continue;
+                }
+                if (write.markDeleted) {
+                    markEmployeeDeletedForBatch(db, write.employeeId, write.updatedAt);
+                } else if (write.employee != null) {
+                    writeEmployeeForBatch(db, write.employee);
+                }
+                if (write.feature != null) {
+                    writeFaceFeatureForBatch(db, write);
+                }
+                if (write.applyOperation != null && !write.applyOperation.isEmpty()) {
+                    writeFaceApplyTaskForBatch(db, write);
+                }
+            }
+            db.setTransactionSuccessful();
+            return true;
+        } catch (RuntimeException e) {
+            return false;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    private void writeEmployeeForBatch(SQLiteDatabase db, Employee employee) {
+        ContentValues v = employeeValues(employee);
+        if (db.insertWithOnConflict("employees", null, v, SQLiteDatabase.CONFLICT_REPLACE) == -1) {
+            throw new IllegalStateException("employee batch write failed: " + employee.id);
+        }
+    }
+
+    private void markEmployeeDeletedForBatch(SQLiteDatabase db, String employeeId, long updatedAt) {
+        if (employeeId == null || employeeId.trim().isEmpty()) {
+            throw new IllegalArgumentException("employeeId is empty");
         }
         ContentValues values = new ContentValues();
-        values.put("emp_id", empId.trim());
-        values.put("face_version", faceVersion);
-        values.put("image_sha256", imageSha256 == null ? "" : imageSha256.trim());
-        values.put("feature_schema_version", featureSchemaVersion);
-        values.put("feature", feature);
-        values.put("updated_at", System.currentTimeMillis());
-        getWritableDatabase().insertWithOnConflict(
-                "face_features", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        values.put("is_deleted", 1);
+        values.put("face_registered", 0);
+        values.putNull("local_face_id");
+        if (updatedAt > 0) {
+            values.put("updated_at", updatedAt);
+        }
+        db.update("employees", values, "id=?", new String[]{employeeId});
     }
 
-    public byte[] getReusableFaceFeature(String empId,
-                                         int faceVersion,
-                                         String imageSha256,
-                                         int featureSchemaVersion) {
-        if (empId == null || empId.trim().isEmpty()) {
-            return null;
+    private void writeFaceFeatureForBatch(SQLiteDatabase db, FaceBatchWrite write) {
+        if (write.feature == null || write.feature.length != 512 || write.employee == null) {
+            throw new IllegalArgumentException("invalid face feature batch write");
+        }
+        ContentValues values = new ContentValues();
+        values.put("emp_id", write.employee.id);
+        values.put("face_version", write.employee.faceVersion);
+        values.put("image_sha256", write.employee.faceImageSha256 == null ? "" : write.employee.faceImageSha256.trim());
+        values.put("feature_schema_version", write.featureSchemaVersion);
+        values.put("feature", write.feature);
+        values.put("updated_at", System.currentTimeMillis());
+        if (db.insertWithOnConflict("face_features", null, values, SQLiteDatabase.CONFLICT_REPLACE) == -1) {
+            throw new IllegalStateException("face feature batch write failed: " + write.employee.id);
+        }
+    }
+
+    private void writeFaceApplyTaskForBatch(SQLiteDatabase db, FaceBatchWrite write) {
+        String employeeId = write.employee != null ? write.employee.id : write.employeeId;
+        if (employeeId == null || employeeId.trim().isEmpty()) {
+            throw new IllegalArgumentException("face apply employeeId is empty");
+        }
+        ContentValues values = new ContentValues();
+        values.put("emp_id", employeeId.trim());
+        values.put("operation", write.applyOperation);
+        values.put("face_version", write.faceVersion);
+        values.put("state", "PENDING");
+        values.put("retry_count", 0);
+        values.put("next_retry_at", 0);
+        values.put("last_error", "");
+        values.put("updated_at", System.currentTimeMillis());
+        if (db.insertWithOnConflict("face_apply_tasks", null, values, SQLiteDatabase.CONFLICT_REPLACE) == -1) {
+            throw new IllegalStateException("face apply task write failed: " + employeeId);
+        }
+    }
+
+    public boolean hasFaceApplyTask(String empId, String operation) {
+        if (empId == null || empId.trim().isEmpty() || operation == null || operation.trim().isEmpty()) {
+            return false;
         }
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT face_version, image_sha256, feature_schema_version, feature " +
-                        "FROM face_features WHERE emp_id=?",
-                new String[]{empId.trim()});
+                "SELECT 1 FROM face_apply_tasks WHERE emp_id=? AND operation=? LIMIT 1",
+                new String[]{empId.trim(), operation.trim()});
         try {
-            if (!c.moveToFirst()) {
-                return null;
-            }
-            int cachedFaceVersion = c.getInt(0);
-            String cachedSha = c.getString(1);
-            int cachedSchemaVersion = c.getInt(2);
-            byte[] feature = c.getBlob(3);
-            return FaceFeatureCachePolicy.isReusable(
-                    cachedFaceVersion, cachedSha,
-                    faceVersion, imageSha256,
-                    cachedSchemaVersion, featureSchemaVersion,
-                    feature) ? feature : null;
+            return c.moveToFirst();
         } finally {
             c.close();
         }
     }
 
-    public void deleteFaceFeature(String empId) {
-        if (empId == null || empId.trim().isEmpty()) {
-            return;
+    public boolean hasPendingFaceApplyTask(String empId, String operation) {
+        if (empId == null || empId.trim().isEmpty() || operation == null || operation.trim().isEmpty()) {
+            return false;
         }
-        getWritableDatabase().delete("face_features", "emp_id=?", new String[]{empId.trim()});
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT 1 FROM face_apply_tasks WHERE emp_id=? AND operation=? AND state='PENDING' LIMIT 1",
+                new String[]{empId.trim(), operation.trim()});
+        try {
+            return c.moveToFirst();
+        } finally {
+            c.close();
+        }
     }
 
-    public void clearFaceFeatures() {
-        getWritableDatabase().delete("face_features", null, null);
+    public Set<String> getPendingFaceApplyEmployeeIds(String operation) {
+        Set<String> result = new HashSet<>();
+        if (operation == null || operation.trim().isEmpty()) {
+            return result;
+        }
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT emp_id FROM face_apply_tasks WHERE operation=? AND state='PENDING'",
+                new String[]{operation.trim()});
+        try {
+            while (c.moveToNext()) {
+                String empId = c.getString(0);
+                if (empId != null && !empId.trim().isEmpty()) {
+                    result.add(empId.trim());
+                }
+            }
+        } finally {
+            c.close();
+        }
+        return result;
+    }
+
+    public int getPendingFaceApplyTaskCount() {
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM face_apply_tasks WHERE state='PENDING'",
+                null);
+        try {
+            return c.moveToFirst() ? c.getInt(0) : 0;
+        } finally {
+            c.close();
+        }
+    }
+
+    public FaceApplyTask getNextFaceApplyTask() {
+        return getNextFaceApplyTask(0L);
+    }
+
+    public FaceApplyTask getNextFaceApplyTask(long afterId) {
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT id, emp_id, operation, face_version, state, retry_count, next_retry_at, last_error, updated_at " +
+                        "FROM face_apply_tasks WHERE id>? ORDER BY id ASC LIMIT 1",
+                new String[]{String.valueOf(afterId)});
+        try {
+            return readFaceApplyTask(c);
+        } finally {
+            c.close();
+        }
+    }
+
+    public FaceApplyTask getNextReadyFaceApplyTask(long afterId, long nowMs) {
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT id, emp_id, operation, face_version, state, retry_count, next_retry_at, last_error, updated_at " +
+                        "FROM face_apply_tasks WHERE id>? AND state='PENDING' AND next_retry_at<=? " +
+                        "ORDER BY id ASC LIMIT 1",
+                new String[]{String.valueOf(afterId), String.valueOf(nowMs)});
+        try {
+            return readFaceApplyTask(c);
+        } finally {
+            c.close();
+        }
+    }
+
+    public long getNextFaceApplyRetryAt() {
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT MIN(next_retry_at) FROM face_apply_tasks " +
+                        "WHERE state='PENDING' AND next_retry_at>0",
+                null);
+        try {
+            return c.moveToFirst() && !c.isNull(0) ? c.getLong(0) : 0L;
+        } finally {
+            c.close();
+        }
+    }
+
+    private FaceApplyTask readFaceApplyTask(Cursor c) {
+        if (!c.moveToFirst()) {
+            return null;
+        }
+        FaceApplyTask task = new FaceApplyTask();
+        task.id = c.getLong(0);
+        task.empId = c.getString(1);
+        task.operation = c.getString(2);
+        task.faceVersion = c.getInt(3);
+        task.state = c.getString(4);
+        task.retryCount = c.getInt(5);
+        task.nextRetryAt = c.getLong(6);
+        task.lastError = c.getString(7);
+        task.updatedAt = c.getLong(8);
+        return task;
+    }
+
+    public boolean deleteFaceApplyTask(long taskId) {
+        SQLiteDatabase db = getWritableDatabase();
+        return db.delete("face_apply_tasks", "id=?", new String[]{String.valueOf(taskId)}) > 0;
+    }
+
+    public void markFaceApplyTaskRetry(long taskId, String error, long nextRetryAt) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.execSQL(
+                "UPDATE face_apply_tasks SET state='PENDING', retry_count=retry_count+1, " +
+                        "next_retry_at=?, last_error=?, updated_at=? WHERE id=?",
+                new Object[]{Math.max(0L, nextRetryAt), error == null ? "" : error,
+                        System.currentTimeMillis(), taskId});
+    }
+
+    public void markFaceApplyTaskPermanentFailed(long taskId, String error) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.execSQL(
+                "UPDATE face_apply_tasks SET state='FAILED', next_retry_at=0, last_error=?, updated_at=? WHERE id=?",
+                new Object[]{error == null ? "" : error, System.currentTimeMillis(), taskId});
+    }
+
+    public boolean completeFaceApplyTask(long taskId, String empId, String localFaceId, boolean registered) {
+        if (empId == null || empId.trim().isEmpty()) {
+            return false;
+        }
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            Cursor c = db.rawQuery(
+                    "SELECT id FROM face_apply_tasks WHERE id=? AND emp_id=? LIMIT 1",
+                    new String[]{String.valueOf(taskId), empId});
+            boolean current;
+            try {
+                current = c.moveToFirst();
+            } finally {
+                c.close();
+            }
+            if (!current) {
+                db.setTransactionSuccessful();
+                return false;
+            }
+            ContentValues values = new ContentValues();
+            if (localFaceId == null) {
+                values.putNull("local_face_id");
+            } else {
+                values.put("local_face_id", localFaceId);
+            }
+            values.put("face_registered", registered ? 1 : 0);
+            db.update("employees", values, "id=?", new String[]{empId});
+            db.delete("face_apply_tasks", "id=?", new String[]{String.valueOf(taskId)});
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public static final class FaceFeatureCacheEntry {
+        public final int faceVersion;
+        public final String imageSha256;
+        public final int featureSchemaVersion;
+        public final byte[] feature;
+
+        FaceFeatureCacheEntry(int faceVersion,
+                              String imageSha256,
+                              int featureSchemaVersion,
+                              byte[] feature) {
+            this.faceVersion = faceVersion;
+            this.imageSha256 = imageSha256 == null ? "" : imageSha256;
+            this.featureSchemaVersion = featureSchemaVersion;
+            this.feature = feature;
+        }
+    }
+
+    public static final class FaceApplyTask {
+        public long id;
+        public String empId;
+        public String operation;
+        public int faceVersion;
+        public String state;
+        public int retryCount;
+        public long nextRetryAt;
+        public String lastError;
+        public long updatedAt;
+    }
+
+    public static final class FaceBatchWrite {
+        public static final String OP_UPSERT = "UPSERT";
+        public static final String OP_REMOVE = "REMOVE";
+
+        public Employee employee;
+        public String employeeId;
+        public boolean markDeleted;
+        public long updatedAt;
+        public byte[] feature;
+        public int featureSchemaVersion;
+        public String applyOperation;
+        public int faceVersion;
+
+        public static FaceBatchWrite upsert(Employee employee) {
+            FaceBatchWrite write = new FaceBatchWrite();
+            write.employee = employee;
+            write.employeeId = employee == null ? null : employee.id;
+            write.faceVersion = employee == null ? 0 : employee.faceVersion;
+            return write;
+        }
+
+        public static FaceBatchWrite remove(String employeeId, long updatedAt) {
+            FaceBatchWrite write = new FaceBatchWrite();
+            write.employeeId = employeeId;
+            write.markDeleted = true;
+            write.updatedAt = updatedAt;
+            write.applyOperation = OP_REMOVE;
+            return write;
+        }
+
+        public FaceBatchWrite withFeature(byte[] value, int schemaVersion) {
+            this.feature = value;
+            this.featureSchemaVersion = schemaVersion;
+            this.applyOperation = OP_UPSERT;
+            this.faceVersion = employee == null ? faceVersion : employee.faceVersion;
+            return this;
+        }
+
+        public FaceBatchWrite withRemoveTask() {
+            this.applyOperation = OP_REMOVE;
+            this.faceVersion = employee == null ? faceVersion : employee.faceVersion;
+            return this;
+        }
     }
 
 
-    public void upsertEmployee(Employee e) {
+    private ContentValues employeeValues(Employee e) {
         ContentValues v = new ContentValues();
         v.put("id", e.id); v.put("name", e.name); v.put("dept", e.dept);
         v.put("face_image_url", e.faceImageUrl);
@@ -258,6 +756,11 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         v.put("assigned_line_name", e.assignedLineName);
         v.put("status", e.status); v.put("sync_version", e.syncVersion);
         v.put("is_deleted", e.isDeleted); v.put("updated_at", e.updatedAt);
+        return v;
+    }
+
+    public void upsertEmployee(Employee e) {
+        ContentValues v = employeeValues(e);
         getWritableDatabase().insertWithOnConflict("employees", null, v, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
@@ -320,6 +823,75 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         } finally {
             c.close();
         }
+    }
+
+    public Set<String> getActiveRegisteredFaceEmployeeIds() {
+        Set<String> employeeIds = new HashSet<>();
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT id FROM employees " +
+                        "WHERE is_deleted=0 AND face_status='enabled' " +
+                        "AND face_registered=1 AND local_face_id IS NOT NULL AND local_face_id<>'' " +
+                        "AND face_image_url IS NOT NULL AND face_image_url<>''",
+                null);
+        try {
+            while (c.moveToNext()) {
+                String empId = c.getString(0);
+                if (empId != null && !empId.trim().isEmpty()) {
+                    employeeIds.add(empId.trim());
+                }
+            }
+        } finally {
+            c.close();
+        }
+        return employeeIds;
+    }
+
+    public Set<String> getPendingFaceApplyTaskEmployeeIds(String operation) {
+        Set<String> employeeIds = new HashSet<>();
+        if (operation == null || operation.trim().isEmpty()) {
+            return employeeIds;
+        }
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT emp_id FROM face_apply_tasks WHERE state='PENDING' AND operation=?",
+                new String[]{operation.trim()});
+        try {
+            while (c.moveToNext()) {
+                String empId = c.getString(0);
+                if (empId != null && !empId.trim().isEmpty()) {
+                    employeeIds.add(empId.trim());
+                }
+            }
+        } finally {
+            c.close();
+        }
+        return employeeIds;
+    }
+
+    public Set<String> getFaceRuntimeEmployeeIdsMissingValidFeature(int featureSchemaVersion) {
+        Set<String> employeeIds = new HashSet<>();
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT e.id FROM employees e " +
+                        "WHERE e.is_deleted=0 AND e.face_status='enabled' " +
+                        "AND e.face_image_url IS NOT NULL AND e.face_image_url<>'' " +
+                        "AND ((e.face_registered=1 AND e.local_face_id IS NOT NULL AND e.local_face_id<>'') " +
+                        "OR EXISTS (SELECT 1 FROM face_apply_tasks t WHERE t.emp_id=e.id " +
+                        "AND t.state='PENDING' AND t.operation='UPSERT')) " +
+                        "AND NOT EXISTS (SELECT 1 FROM face_features f WHERE f.emp_id=e.id " +
+                        "AND f.face_version=e.face_version " +
+                        "AND COALESCE(f.image_sha256, '')=COALESCE(e.face_image_sha256, '') " +
+                        "AND f.feature_schema_version=? AND LENGTH(f.feature)=512)",
+                new String[]{String.valueOf(featureSchemaVersion)});
+        try {
+            while (c.moveToNext()) {
+                String empId = c.getString(0);
+                if (empId != null && !empId.trim().isEmpty()) {
+                    employeeIds.add(empId.trim());
+                }
+            }
+        } finally {
+            c.close();
+        }
+        return employeeIds;
     }
 
 
@@ -391,20 +963,35 @@ public class DatabaseHelper extends SQLiteOpenHelper {
             v.put("updated_at", updatedAt);
         }
         getWritableDatabase().update("employees", v, "id=?", new String[]{id});
-        deleteFaceFeature(id);
     }
 
     public void removeEmployee(String id) {
         if (id == null || id.trim().isEmpty()) {
             return;
         }
-        deleteFaceFeature(id);
-        getWritableDatabase().delete("employees", "id=?", new String[]{id});
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.delete("face_apply_tasks", "emp_id=?", new String[]{id});
+            db.delete("face_features", "emp_id=?", new String[]{id});
+            db.delete("employees", "id=?", new String[]{id});
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
     public void clearAllEmployees() {
-        clearFaceFeatures();
-        getWritableDatabase().delete("employees", null, null);
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.delete("face_apply_tasks", null, null);
+            db.delete("face_features", null, null);
+            db.delete("employees", null, null);
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
 
@@ -732,6 +1319,8 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         try {
             db.delete("sync_queue", null, null);
             db.delete("punch_records", null, null);
+            db.delete("face_apply_tasks", null, null);
+            db.delete("face_features", null, null);
             db.delete("employees", null, null);
             db.setTransactionSuccessful();
         } finally {

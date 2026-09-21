@@ -279,11 +279,8 @@ public class LoginActivity extends AppCompatActivity {
         updateLoadingStatus("\u6b63\u5728\u521d\u59cb\u5316\u6253\u5361\u73af\u5883...");
         PunchApplication app = PunchApplication.get();
         if (app != null) {
-            app.resetPunchRecognitionState();
             app.reportStatusEvent("\u767b\u5f55\u6210\u529f", PunchApplication.STATUS_LEVEL_SUCCESS);
-            app.setCurrentPunchStatus("\u6b63\u5728\u521d\u59cb\u5316\u6253\u5361\u73af\u5883...", PunchApplication.STATUS_LEVEL_PROGRESS);
-            app.initFaceSDK();
-            app.preparePunchRecognitionData();
+            app.restartPunchRecognitionData();
         }
         SyncService.triggerSync(this, SyncTrigger.APP_START);
         startActivity(new Intent(this, MainActivity.class));

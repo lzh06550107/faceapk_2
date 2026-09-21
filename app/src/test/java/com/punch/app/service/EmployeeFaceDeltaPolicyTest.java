@@ -18,8 +18,8 @@ public class EmployeeFaceDeltaPolicyTest {
     }
 
     @Test
-    public void faceChangeNeedsRegister() {
-        assertEquals(EmployeeFaceDeltaPolicy.Action.REGISTER,
+    public void faceChangeForRegisteredEmployeeNeedsReplace() {
+        assertEquals(EmployeeFaceDeltaPolicy.Action.REPLACE,
                 EmployeeFaceDeltaPolicy.classify(true, true, false, true, true, true));
     }
 

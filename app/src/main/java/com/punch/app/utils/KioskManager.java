@@ -207,9 +207,11 @@ public final class KioskManager {
             dpm.setLockTaskPackages(admin, new String[]{context.getPackageName()});
             ensureOwnerRuntimePermissions(context);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS);
+                int lockTaskFeatures = DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS
+                        | DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO;
+                dpm.setLockTaskFeatures(admin, lockTaskFeatures);
             }
-            dpm.setStatusBarDisabled(admin, true);
+            dpm.setStatusBarDisabled(admin, false);
             dpm.setKeyguardDisabled(admin, true);
             dpm.addUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT);
             dpm.addUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET);

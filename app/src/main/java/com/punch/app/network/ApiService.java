@@ -29,7 +29,7 @@ import java.util.Map;
 import okio.ByteString;
 
 public final class ApiService {
-    private static final int EMPLOYEE_SYNC_PAGE_SIZE = 500;
+    private static final int EMPLOYEE_SYNC_PAGE_SIZE = 200;
     private static final String TAG = "ApiService";
 
     private ApiService() {

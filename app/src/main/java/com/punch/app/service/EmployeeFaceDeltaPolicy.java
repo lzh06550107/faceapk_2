@@ -4,6 +4,7 @@ public final class EmployeeFaceDeltaPolicy {
     public enum Action {
         NONE,
         REGISTER,
+        REPLACE,
         REMOVE
     }
 
@@ -21,6 +22,9 @@ public final class EmployeeFaceDeltaPolicy {
         }
         if (!hasFaceImage) {
             return Action.NONE;
+        }
+        if (employeeExisted && faceChanged && currentlyRegistered) {
+            return Action.REPLACE;
         }
         if (!employeeExisted || faceChanged || !currentlyRegistered) {
             return Action.REGISTER;

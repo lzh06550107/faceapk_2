@@ -104,6 +104,133 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/page_ntp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_login_panel"
+                android:elevation="10dp"
+                android:orientation="vertical"
+                android:padding="22dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="第 2 步 · 系统时间 / NTP"
+                    android:textColor="@color/white"
+                    android:textSize="22sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="配置整个 Android 系统使用的 NTP 时间源。测试仅检测服务器，不会修改系统时间。"
+                    android:textColor="#9AB2C8"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tv_ntp_capability"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:text="Device Owner：检测中..."
+                    android:textColor="#BBD4EA"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tv_ntp_current_server"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="当前系统 NTP：读取中..."
+                    android:textColor="#DCE7F2"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:text="目标 NTP 服务器"
+                    android:textColor="#DCE7F2"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/et_ntp_server"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_login_input"
+                    android:hint="例如 192.168.111.240 或 ntp.example.com"
+                    android:inputType="textUri"
+                    android:paddingHorizontal="14dp"
+                    android:singleLine="true"
+                    android:textColor="@color/white"
+                    android:textColorHint="#6F879A" />
+
+                <Button
+                    android:id="@+id/btn_test_ntp"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_login_input"
+                    android:text="测试 NTP 服务器"
+                    android:textAllCaps="false"
+                    android:textColor="#DCE7F2"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btn_apply_ntp"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_login_button"
+                    android:text="应用到 Android 系统"
+                    android:textAllCaps="false"
+                    android:textColor="@color/white"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tv_ntp_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_login_input"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="10dp"
+                    android:text="请先测试并应用系统 NTP 配置。"
+                    android:textColor="#BBD4EA"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_ntp_prev"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@android:color/transparent"
+                    android:text="上一步"
+                    android:textAllCaps="false"
+                    android:textColor="#6F879A"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btn_ntp_next"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_login_button"
+                    android:enabled="false"
+                    android:text="下一步"
+                    android:textAllCaps="false"
+                    android:textColor="@color/white"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:id="@+id/page_server"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -115,7 +242,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="第 2 步 · 配置服务器"
+                    android:text="第 3 步 · 配置服务器"
                     android:textColor="@color/white"
                     android:textSize="22sp"
                     android:textStyle="bold" />

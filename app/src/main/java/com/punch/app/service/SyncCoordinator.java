@@ -4,6 +4,7 @@ import android.content.Context;
 
 import com.punch.app.PunchApplication;
 import com.punch.app.db.DatabaseHelper;
+import com.punch.app.face.FaceApplyWorker;
 import com.punch.app.face.FaceManager;
 import com.punch.app.face.FaceRegistrationManager;
 import com.punch.app.model.Employee;
@@ -36,12 +37,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class SyncCoordinator {
     private static final String TAG = "SyncCoordinator";
     private static final long FACE_REGISTRATION_TIMEOUT_SECONDS = 300L;
     private static final long SYNCED_SNAPSHOT_CLEANUP_DELAY_MS = 5000L;
+    private static final int FACE_APPLY_BACKLOG_HIGH_WATERMARK = 500;
+    private static final int FACE_APPLY_BACKLOG_LOW_WATERMARK = 200;
     private static final String FAILURE_MSG_EMPLOYEE_SYNC_FAILED = "员工同步失败";
     private static final String FAILURE_MSG_FACE_SDK_NOT_READY = "人脸引擎未就绪";
     private static final String FAILURE_MSG_FACE_REGISTRATION_INCOMPLETE = "人脸注册未完成";
@@ -57,6 +61,7 @@ public final class SyncCoordinator {
     private final ScheduledExecutorService snapshotCleanupExecutor = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean heartbeatQueued = new AtomicBoolean(false);
     private final AtomicBoolean punchSyncQueued = new AtomicBoolean(false);
+    private final AtomicBoolean faceApplyBackpressureActive = new AtomicBoolean(false);
     private final AtomicReference<SyncTrigger> pendingTrigger = new AtomicReference<>();
     private final AtomicReference<SyncTrigger> pendingPunchTrigger = new AtomicReference<>();
 
@@ -113,7 +118,7 @@ public final class SyncCoordinator {
     }
 
     public boolean syncEmployeesForPreparation(Context context) {
-        return syncEmployeesInternal(context.getApplicationContext(), false).overallSuccess;
+        return syncEmployeesInternal(context.getApplicationContext()).overallSuccess;
     }
 
     public boolean rebuildLocalFaceLibrary(Context context) {
@@ -144,6 +149,9 @@ public final class SyncCoordinator {
         }
 
         enqueuePunchSync(appContext, trigger);
+        if (FaceManager.get().isInitialized() && FaceManager.get().isFaceLibraryReady()) {
+            FaceApplyWorker.get().trigger(appContext);
+        }
 
         ApiResult<HeartbeatDto.HeartbeatData> heartbeat = ApiService.fetchHeartbeat(appContext);
         if (!heartbeat.success || heartbeat.data == null) {
@@ -188,6 +196,13 @@ public final class SyncCoordinator {
                     "开始处理平台事件",
                     "cursor=" + event.cursor + "\nevent_type=" + safeString(event.eventType)
             );
+            if ("person_changed".equals(safeString(event.eventType))) {
+                if (!syncEmployeesEventInBatches(appContext, event)) {
+                    break;
+                }
+                continue;
+            }
+
             EventProcessingOutcome outcome = handleEvent(appContext, event);
 
             ApiResult<Void> ackResult = ApiService.reportEventResult(
@@ -223,11 +238,357 @@ public final class SyncCoordinator {
         }
     }
 
+    private EmployeeBatchOutcome processEmployeeEventBatch(
+            Context context,
+            List<EmployeeSyncData.ChangeItem> changeItems,
+            EmployeeBatchProgressCallback progressCallback) {
+        int rawBatchSize = changeItems == null ? 0 : changeItems.size();
+        List<EmployeeSyncData.ChangeItem> effectiveChanges = coalesceLatestEmployeeChanges(changeItems);
+        AtomicInteger processedCount = new AtomicInteger(Math.max(0, rawBatchSize - effectiveChanges.size()));
+        DatabaseHelper db = DatabaseHelper.get(context);
+        LinkedHashMap<String, EventResultDto.EmployeeResult> employeeResults = new LinkedHashMap<>();
+        LinkedHashMap<String, DatabaseHelper.FaceBatchWrite> writesByEmployee = new LinkedHashMap<>();
+        LinkedHashMap<String, Employee> preparationTargets = new LinkedHashMap<>();
+        Map<String, String> resultKeyByEmployeeId = new HashMap<>();
+
+        if (!FaceManager.get().isInitialized()) {
+            return EmployeeBatchOutcome.failure(FAILURE_MSG_FACE_SDK_NOT_READY, new ArrayList<>());
+        }
+
+        for (EmployeeSyncData.ChangeItem changeItem : effectiveChanges) {
+            if (changeItem == null || isBlank(changeItem.numbers)) {
+                return EmployeeBatchOutcome.failure("员工变更缺少人员编号", toEmployeeResultList(employeeResults));
+            }
+            String numbers = changeItem.numbers;
+            String opType = safeOpType(changeItem.opType);
+
+            if ("delete".equalsIgnoreCase(changeItem.opType)) {
+                Employee existing = db.getEmployee(numbers);
+                if (isStaleEmployeeChange(existing, changeItem.opTime) || existing == null) {
+                    employeeResults.put(numbers, EventResultDto.EmployeeResult.success(numbers, "delete"));
+                    markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                    continue;
+                }
+                preparationTargets.remove(numbers);
+                writesByEmployee.put(numbers, DatabaseHelper.FaceBatchWrite.remove(numbers, changeItem.opTime));
+                resultKeyByEmployeeId.put(numbers, numbers);
+                employeeResults.put(numbers, EventResultDto.EmployeeResult.success(numbers, "delete"));
+                markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                continue;
+            }
+
+            Employee incoming = changeItem.employee;
+            if (incoming == null) {
+                employeeResults.put(
+                        numbers,
+                        EventResultDto.EmployeeResult.failure(numbers, opType, FaceManager.ERROR_INVALID_FACE_IMAGE));
+                markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                continue;
+            }
+
+            Employee existing = db.getEmployee(incoming.id);
+            if (isStaleEmployeeChange(existing, changeItem.opTime)) {
+                employeeResults.put(numbers, EventResultDto.EmployeeResult.success(numbers, opType));
+                markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                continue;
+            }
+
+            Employee merged = mergeEmployee(existing, incoming);
+            DatabaseHelper.FaceBatchWrite write = DatabaseHelper.FaceBatchWrite.upsert(merged);
+            writesByEmployee.put(merged.id, write);
+            resultKeyByEmployeeId.put(merged.id, numbers);
+            EventResultDto.EmployeeResult employeeResult = EventResultDto.EmployeeResult.success(numbers, opType);
+            employeeResults.put(numbers, employeeResult);
+
+            if (!isFaceEnabled(merged)) {
+                preparationTargets.remove(merged.id);
+                merged.localFaceId = null;
+                merged.faceRegistered = 0;
+                write.withRemoveTask();
+                markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                continue;
+            }
+
+            if (isBlank(merged.faceImageUrl)) {
+                preparationTargets.remove(merged.id);
+                merged.localFaceId = null;
+                merged.faceRegistered = 0;
+                write.withRemoveTask();
+                employeeResult.success = false;
+                employeeResult.failMsg = FAILURE_MSG_FACE_IMAGE_URL_EMPTY;
+                markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                continue;
+            }
+
+            if (merged.faceRegistered == 1) {
+                preparationTargets.remove(merged.id);
+                markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                continue;
+            }
+
+            byte[] cachedFeature = db.getValidFaceFeature(
+                    merged.id,
+                    merged.faceVersion,
+                    merged.faceImageSha256,
+                    FaceManager.get().getFeatureSchemaVersion());
+            if (cachedFeature != null) {
+                write.withFeature(cachedFeature, FaceManager.get().getFeatureSchemaVersion());
+                markEmployeeBatchItemProcessed(progressCallback, processedCount, rawBatchSize);
+                continue;
+            }
+            preparationTargets.put(merged.id, merged);
+        }
+
+        if (!preparationTargets.isEmpty()) {
+            FacePreparationOutcome preparationOutcome = waitForFacePreparation(
+                    context,
+                    new ArrayList<>(preparationTargets.values()),
+                    prepared -> markEmployeeBatchItemProcessed(
+                            progressCallback, processedCount, rawBatchSize));
+            if (!preparationOutcome.completed) {
+                return EmployeeBatchOutcome.failure(
+                        FAILURE_MSG_FACE_REGISTRATION_INCOMPLETE,
+                        toEmployeeResultList(employeeResults));
+            }
+
+            Map<String, FaceRegistrationManager.PreparedFaceResult> preparedById = new HashMap<>();
+            for (FaceRegistrationManager.PreparedFaceResult prepared : preparationOutcome.results) {
+                if (prepared != null && !isBlank(prepared.empId)) {
+                    preparedById.put(prepared.empId, prepared);
+                }
+            }
+
+            for (Map.Entry<String, Employee> entry : preparationTargets.entrySet()) {
+                String empId = entry.getKey();
+                Employee employee = entry.getValue();
+                DatabaseHelper.FaceBatchWrite write = writesByEmployee.get(empId);
+                String resultKey = resultKeyByEmployeeId.get(empId);
+                EventResultDto.EmployeeResult employeeResult = employeeResults.get(resultKey);
+                FaceRegistrationManager.PreparedFaceResult prepared = preparedById.get(empId);
+                if (write == null || employeeResult == null) {
+                    continue;
+                }
+                if (prepared == null || !prepared.success || prepared.feature == null || prepared.feature.length != 512) {
+                    employee.localFaceId = null;
+                    employee.faceRegistered = 0;
+                    write.withRemoveTask();
+                    employeeResult.success = false;
+                    employeeResult.failMsg = prepared == null
+                            ? FAILURE_MSG_FACE_REGISTRATION_INCOMPLETE
+                            : safeString(prepared.failMsg);
+                    continue;
+                }
+                write.withFeature(prepared.feature, FaceManager.get().getFeatureSchemaVersion());
+            }
+        }
+
+        List<DatabaseHelper.FaceBatchWrite> batchWrites = new ArrayList<>(writesByEmployee.values());
+        if (!db.commitEmployeeFaceBatch(batchWrites)) {
+            return EmployeeBatchOutcome.failure("员工批次本地落库失败", toEmployeeResultList(employeeResults));
+        }
+        return EmployeeBatchOutcome.success(toEmployeeResultList(employeeResults));
+    }
+
+    private void markEmployeeBatchItemProcessed(EmployeeBatchProgressCallback progressCallback,
+                                                AtomicInteger processedCount,
+                                                int rawBatchSize) {
+        int processed = processedCount.incrementAndGet();
+        if (progressCallback != null) {
+            progressCallback.onProgress(processed, Math.max(0, rawBatchSize));
+        }
+    }
+
+    private List<EmployeeSyncData.ChangeItem> coalesceLatestEmployeeChanges(
+            List<EmployeeSyncData.ChangeItem> changeItems) {
+        List<EmployeeSyncData.ChangeItem> effective = new ArrayList<>();
+        Map<String, Integer> indexByEmployee = new HashMap<>();
+        if (changeItems == null) {
+            return effective;
+        }
+        for (EmployeeSyncData.ChangeItem item : changeItems) {
+            if (item == null || isBlank(item.numbers)) {
+                effective.add(item);
+                continue;
+            }
+            String key = item.numbers.trim();
+            Integer index = indexByEmployee.get(key);
+            if (index == null) {
+                indexByEmployee.put(key, effective.size());
+                effective.add(item);
+                continue;
+            }
+            EmployeeSyncData.ChangeItem current = effective.get(index);
+            long currentTime = current == null ? 0L : current.opTime;
+            long candidateTime = item.opTime;
+            if (candidateTime <= 0L || currentTime <= 0L || candidateTime >= currentTime) {
+                effective.set(index, item);
+            }
+        }
+        return effective;
+    }
+
+    private boolean shouldPauseEmployeeBatchFetch(Context context) {
+        DatabaseHelper db = DatabaseHelper.get(context);
+        int pendingCount = db.getPendingFaceApplyTaskCount();
+        boolean active = faceApplyBackpressureActive.get();
+
+        if (pendingCount >= FACE_APPLY_BACKLOG_HIGH_WATERMARK) {
+            faceApplyBackpressureActive.set(true);
+            FaceApplyWorker.get().trigger(context);
+            AppLogger.w(TAG, "Pause employee batch fetch: face apply backlog=" + pendingCount
+                    + " highWatermark=" + FACE_APPLY_BACKLOG_HIGH_WATERMARK);
+            return true;
+        }
+
+        if (active && pendingCount > FACE_APPLY_BACKLOG_LOW_WATERMARK) {
+            FaceApplyWorker.get().trigger(context);
+            AppLogger.d(TAG, "Keep employee batch fetch paused: face apply backlog=" + pendingCount
+                    + " lowWatermark=" + FACE_APPLY_BACKLOG_LOW_WATERMARK);
+            return true;
+        }
+
+        if (active) {
+            faceApplyBackpressureActive.set(false);
+            AppLogger.i(TAG, "Resume employee batch fetch: face apply backlog=" + pendingCount);
+        }
+        return false;
+    }
+
+    private boolean syncEmployeesEventInBatches(Context context,
+                                                HeartbeatDto.HeartbeatEventData event) {
+        PunchApplication app = PunchApplication.get();
+        if (app != null) {
+            app.beginEmployeeSyncProgress(event.cursor);
+        }
+        InteractionLogger.logBusiness(
+                InteractionLogger.GROUP_EMPLOYEE_SYNC,
+                "开始分批同步员工列表",
+                "event_cursor=" + safeString(event.cursor) + "\n每批最多 200 人，全部落库后统一回传");
+
+        int page = 1;
+        List<EventResultDto.EmployeeResult> eventEmployeeResults = new ArrayList<>();
+
+        while (true) {
+            ApiResult<EmployeeSyncData> result = ApiService.syncEmployees(page);
+            if (!result.success || result.data == null) {
+                if (app != null) {
+                    app.failEmployeeSyncProgress("人员更新中断，等待服务器重新下发", eventEmployeeResults.size());
+                }
+                InteractionLogger.logBusinessFailure(
+                        InteractionLogger.GROUP_EMPLOYEE_SYNC,
+                        "员工批次拉取失败",
+                        "page=" + page + "\nreason=" + safeString(result.message));
+                return false;
+            }
+
+            EmployeeSyncData data = result.data;
+            if (data.changeItems == null || data.changeItems.isEmpty()) {
+                if (data.serverTime > 0) {
+                    SessionManager.get().saveLastServerTime(data.serverTime);
+                }
+                break;
+            }
+
+            if (app != null) {
+                app.updateEmployeeSyncBatchProcessing(
+                        page,
+                        data.totalPages,
+                        data.changeItems.size(),
+                        eventEmployeeResults.size());
+            }
+
+            final int currentPage = page;
+            final int totalPages = data.totalPages;
+            final int processedBeforePage = eventEmployeeResults.size();
+            EmployeeBatchOutcome batch = processEmployeeEventBatch(
+                    context,
+                    data.changeItems,
+                    (batchProcessed, batchTotal) -> {
+                        if (app != null) {
+                            app.updateEmployeeSyncItemProgress(
+                                    currentPage,
+                                    totalPages,
+                                    batchTotal,
+                                    batchProcessed,
+                                    processedBeforePage + batchProcessed);
+                        }
+                    });
+            if (!batch.durableCommitSucceeded) {
+                if (app != null) {
+                    app.failEmployeeSyncProgress("人员更新落库失败，等待服务器重新下发", eventEmployeeResults.size());
+                }
+                InteractionLogger.logBusinessFailure(
+                        InteractionLogger.GROUP_EMPLOYEE_SYNC,
+                        "员工批次处理失败",
+                        "page=" + page + "\nreason=" + safeString(batch.failureMessage));
+                return false;
+            }
+
+            eventEmployeeResults.addAll(batch.employeeResults);
+            if (app != null) {
+                app.markEmployeeSyncBatchCommitted(
+                        page,
+                        data.totalPages,
+                        batch.employeeResults.size(),
+                        eventEmployeeResults.size());
+            }
+
+            // Each batch has already committed its desired state. FaceSearch application is
+            // device-local and can converge asynchronously while later pages are prepared.
+            FaceApplyWorker.get().trigger(context);
+
+            if (data.serverTime > 0) {
+                SessionManager.get().saveLastServerTime(data.serverTime);
+            }
+            InteractionLogger.logBusiness(
+                    InteractionLogger.GROUP_EMPLOYEE_SYNC,
+                    "员工批次已落库",
+                    "page=" + page + "\n人数=" + batch.employeeResults.size());
+
+            if (!data.hasMore) {
+                break;
+            }
+            page += 1;
+        }
+
+        int successTotal = countSucceededEmployeeResults(eventEmployeeResults);
+        int failedTotal = eventEmployeeResults.size() - successTotal;
+        if (app != null) {
+            app.markEmployeeSyncReporting(eventEmployeeResults.size(), successTotal, failedTotal);
+        }
+
+        ApiResult<Void> ackResult = ApiService.reportEventResult(
+                event.cursor,
+                event.eventType,
+                true,
+                eventEmployeeResults,
+                null);
+        if (!ackResult.success) {
+            if (app != null) {
+                app.failEmployeeSyncProgress("人员更新确认失败，等待服务器重新下发", eventEmployeeResults.size());
+            }
+            AppLogger.w(TAG, "Employee event ACK failed: cursor=" + event.cursor
+                    + " reason=" + ackResult.message);
+            InteractionLogger.logBusinessFailure(
+                    InteractionLogger.GROUP_EVENT_RESULT,
+                    "员工事件结果回传失败",
+                    "cursor=" + event.cursor + "\nreason=" + safeString(ackResult.message));
+            return false;
+        }
+
+        if (app != null) {
+            app.completeEmployeeSyncProgress(eventEmployeeResults.size(), successTotal, failedTotal);
+        }
+        InteractionLogger.logBusiness(
+                InteractionLogger.GROUP_EVENT_RESULT,
+                "事件结果已回传",
+                "cursor=" + event.cursor + "\n人数=" + eventEmployeeResults.size());
+        return true;
+    }
+
     private EventProcessingOutcome handleEvent(Context context, HeartbeatDto.HeartbeatEventData event) {
         String eventType = safeString(event.eventType);
         switch (eventType) {
-            case "person_changed":
-                return syncEmployeesEvent(context);
             case "config_changed":
                 return syncDeviceConfig(context)
                         ? EventProcessingOutcome.success()
@@ -236,13 +597,6 @@ public final class SyncCoordinator {
                 AppLogger.d(TAG, "Ignore heartbeat event: " + eventType);
                 return EventProcessingOutcome.success();
         }
-    }
-
-    private EventProcessingOutcome syncEmployeesEvent(Context context) {
-        EmployeeSyncProcessingResult result = syncEmployeesInternal(context, true);
-        return result.eventSuccess
-                ? EventProcessingOutcome.success(result.employeeResults)
-                : EventProcessingOutcome.failure(result.failureMessage, result.employeeResults);
     }
 
     private void enqueuePunchSync(Context context, SyncTrigger trigger) {
@@ -589,7 +943,7 @@ public final class SyncCoordinator {
         return null;
     }
 
-    private EmployeeSyncProcessingResult syncEmployeesInternal(Context context, boolean collectEventResults) {
+    private EmployeeSyncProcessingResult syncEmployeesInternal(Context context) {
         PunchApplication app = PunchApplication.get();
         if (app != null) {
             app.beginPunchDataPreparation("正在同步员工数据...");
@@ -597,33 +951,24 @@ public final class SyncCoordinator {
         InteractionLogger.logBusiness(
                 InteractionLogger.GROUP_EMPLOYEE_SYNC,
                 "开始同步员工列表",
-                collectEventResults ? "事件模式：需要回传逐员工结果" : "准备模式：仅构建本地人脸数据"
-        );
+                "准备模式：仅构建本地人脸数据");
         DatabaseHelper db = DatabaseHelper.get(context);
         int page = 1;
-        LinkedHashMap<String, EventResultDto.EmployeeResult> employeeResults =
-                collectEventResults ? new LinkedHashMap<>() : null;
-        LinkedHashMap<String, Employee> registrationTargets =
-                collectEventResults ? new LinkedHashMap<>() : null;
-        LinkedHashMap<String, String> removalTargets =
-                collectEventResults ? new LinkedHashMap<>() : null;
 
         while (true) {
             ApiResult<EmployeeSyncData> result = ApiService.syncEmployees(page);
             if (!result.success || result.data == null) {
                 if (app != null) {
-                    app.markPunchRecognitionFailed("\u5458\u5de5\u540c\u6b65\u5931\u8d25\uff0c\u7b49\u5f85\u91cd\u8bd5");
+                    app.markPunchRecognitionFailed("员工同步失败，等待重试");
                 }
                 AppLogger.w(TAG, "Employee sync failed: " + result.message);
                 InteractionLogger.logBusinessFailure(
                         InteractionLogger.GROUP_EMPLOYEE_SYNC,
                         "员工同步失败",
-                        "page=" + page + "\nreason=" + safeString(result.message)
-                );
+                        "page=" + page + "\nreason=" + safeString(result.message));
                 return EmployeeSyncProcessingResult.failure(
                         FAILURE_MSG_EMPLOYEE_SYNC_FAILED,
-                        toEmployeeResultList(employeeResults)
-                );
+                        new ArrayList<>());
             }
 
             EmployeeSyncData data = result.data;
@@ -632,84 +977,35 @@ public final class SyncCoordinator {
                     continue;
                 }
                 if ("delete".equalsIgnoreCase(changeItem.opType)) {
-                    boolean deleteApplied = applyDeleteChange(db, changeItem);
-                    if (collectEventResults) {
-                        employeeResults.put(
-                                changeItem.numbers,
-                                EventResultDto.EmployeeResult.success(changeItem.numbers, "delete")
-                        );
-                        if (deleteApplied) {
-                            removalTargets.put(changeItem.numbers, "delete");
-                        }
+                    if (!applyDeleteChange(db, changeItem)) {
+                        continue;
                     }
+                    if (FaceManager.get().isInitialized()) {
+                        FaceManager.get().removeFace(changeItem.numbers);
+                    }
+                    db.updateFaceRegistration(changeItem.numbers, null, false);
                     continue;
                 }
 
                 Employee incoming = changeItem.employee;
                 if (incoming == null) {
-                    if (collectEventResults) {
-                        employeeResults.put(
-                                changeItem.numbers,
-                                EventResultDto.EmployeeResult.failure(
-                                        changeItem.numbers,
-                                        safeOpType(changeItem.opType),
-                                        FaceManager.ERROR_INVALID_FACE_IMAGE
-                                )
-                        );
-                    }
                     continue;
                 }
-
                 Employee existing = db.getEmployee(incoming.id);
                 if (isStaleEmployeeChange(existing, changeItem.opTime)) {
-                    if (collectEventResults) {
-                        employeeResults.put(
-                                changeItem.numbers,
-                                EventResultDto.EmployeeResult.success(
-                                        changeItem.numbers,
-                                        safeOpType(changeItem.opType)
-                                )
-                        );
-                    }
                     continue;
                 }
 
-                boolean faceChanged = hasFaceChanged(existing, incoming);
                 Employee merged = mergeEmployee(existing, incoming);
                 db.upsertEmployee(merged);
-                if (collectEventResults) {
-                    EventResultDto.EmployeeResult employeeResult =
-                            EventResultDto.EmployeeResult.success(changeItem.numbers, safeOpType(changeItem.opType));
-                    boolean faceEnabled = "enabled".equalsIgnoreCase(safeString(merged.faceStatus));
-                    boolean hasFaceImage = !isBlank(merged.faceImageUrl);
-                    EmployeeFaceDeltaPolicy.Action faceAction = EmployeeFaceDeltaPolicy.classify(
-                            existing != null,
-                            faceChanged,
-                            false,
-                            faceEnabled,
-                            hasFaceImage,
-                            merged.faceRegistered == 1
-                    );
-                    if (faceEnabled && merged.faceRegistered != 1 && !hasFaceImage) {
-                        employeeResult.success = false;
-                        employeeResult.failMsg = FAILURE_MSG_FACE_IMAGE_URL_EMPTY;
-                        AppLogger.w(TAG, "Employee face image url is empty: empId=" + safeString(merged.id));
-                    } else if (faceAction == EmployeeFaceDeltaPolicy.Action.REGISTER) {
-                        if (faceChanged) {
-                            db.deleteFaceFeature(merged.id);
-                            if (existing != null && existing.faceRegistered == 1) {
-                                removalTargets.put(merged.id, "replace");
-                            }
-                        }
-                        registrationTargets.put(merged.id, merged);
-                    } else if (faceAction == EmployeeFaceDeltaPolicy.Action.REMOVE) {
-                        db.deleteFaceFeature(merged.id);
-                        db.updateFaceRegistration(merged.id, null, false);
-                        removalTargets.put(merged.id, safeOpType(changeItem.opType));
+                if (!isFaceEnabled(merged)) {
+                    if (FaceManager.get().isInitialized()) {
+                        FaceManager.get().removeFace(merged.id);
                     }
-                    employeeResults.put(changeItem.numbers, employeeResult);
+                    db.updateFaceRegistration(merged.id, null, false);
                 }
             }
+
             if (!data.hasMore) {
                 if (data.serverTime > 0) {
                     SessionManager.get().saveLastServerTime(data.serverTime);
@@ -717,8 +1013,7 @@ public final class SyncCoordinator {
                 InteractionLogger.logBusiness(
                         InteractionLogger.GROUP_EMPLOYEE_SYNC,
                         "员工列表拉取完成",
-                        "最后页 page=" + page + "\n变更数 " + data.changeItems.size()
-                );
+                        "最后页 page=" + page + "\n变更数 " + data.changeItems.size());
                 break;
             }
             page += 1;
@@ -726,105 +1021,31 @@ public final class SyncCoordinator {
 
         if (!FaceManager.get().isInitialized()) {
             if (app != null) {
-                app.markPunchRecognitionFailed("\u4eba\u8138\u5f15\u64ce\u672a\u5c31\u7eea\uff0c\u65e0\u6cd5\u91cd\u5efa\u4eba\u8138\u5e93");
+                app.markPunchRecognitionFailed("人脸引擎未就绪，无法重建人脸库");
             }
             AppLogger.w(TAG, "Employee sync applied but face SDK is not ready");
             InteractionLogger.logBusinessFailure(
                     InteractionLogger.GROUP_EMPLOYEE_SYNC,
                     "员工数据已入库，但人脸引擎未就绪",
-                    FAILURE_MSG_FACE_SDK_NOT_READY
-            );
-            markPendingRegistrationsFailed(
-                    employeeResults,
-                    registrationTargets,
-                    FAILURE_MSG_FACE_SDK_NOT_READY
-            );
+                    FAILURE_MSG_FACE_SDK_NOT_READY);
             return EmployeeSyncProcessingResult.failure(
                     FAILURE_MSG_FACE_SDK_NOT_READY,
-                    toEmployeeResultList(employeeResults)
-            );
-        }
-
-        if (collectEventResults
-                && registrationTargets.isEmpty()
-                && removalTargets.isEmpty()) {
-            FaceRegistrationOutcome noFaceChanges =
-                    FaceRegistrationOutcome.success(new ArrayList<>(), 0, 0);
-            if (app != null) {
-                publishPreparationOutcome(app, noFaceChanges);
-            }
-            InteractionLogger.logBusiness(
-                    InteractionLogger.GROUP_EMPLOYEE_SYNC,
-                    "员工事件处理完成",
-                    "本次无运行时人脸变更"
-            );
-            return EmployeeSyncProcessingResult.success(
-                    true,
-                    toEmployeeResultList(employeeResults)
-            );
+                    new ArrayList<>());
         }
 
         if (app != null) {
-            app.updatePunchDataPreparationStatus("\u6b63\u5728\u4e0b\u8f7d\u5e76\u6821\u9a8c\u4eba\u8138\u56fe\u7247...");
+            app.updatePunchDataPreparationStatus("正在下载并校验人脸图片...");
         }
         InteractionLogger.logBusiness(
                 InteractionLogger.GROUP_EMPLOYEE_SYNC,
                 "开始下载并校验人脸图片",
-                collectEventResults ? "仅处理本次事件涉及的人员" : "处理当前全部待注册人员"
-        );
-        if (collectEventResults) {
-            if (app != null) {
-                app.updatePunchDataPreparationStatus("正在增量更新人脸库...");
-            }
-            for (String empId : removalTargets.keySet()) {
-                FaceManager.get().removeFace(empId);
-                AppLogger.i(TAG, "Incremental face removed: empId=" + safeString(empId));
-            }
-
-            FaceRegistrationOutcome registrationOutcome = registrationTargets.isEmpty()
-                    ? FaceRegistrationOutcome.success(new ArrayList<>(), 0, 0)
-                    : waitForIncrementalFaceRegistration(
-                            context,
-                            new ArrayList<>(registrationTargets.values())
-                    );
-            List<EventResultDto.EmployeeResult> finalResults =
-                    applyRegistrationResults(employeeResults, registrationOutcome.results);
-            if (!registrationOutcome.completed) {
-                markMissingRegistrationResultsFailed(
-                        employeeResults,
-                        registrationTargets,
-                        registrationOutcome.results,
-                        FAILURE_MSG_FACE_REGISTRATION_INCOMPLETE
-                );
-                if (app != null) {
-                    app.markPunchRecognitionFailed(STATUS_MSG_FACE_LIBRARY_REBUILD_FAILED);
-                }
-                InteractionLogger.logBusinessFailure(
-                        InteractionLogger.GROUP_EMPLOYEE_SYNC,
-                        "人脸增量注册未完整完成",
-                        FAILURE_MSG_FACE_REGISTRATION_INCOMPLETE
-                );
-                return EmployeeSyncProcessingResult.failure(
-                        FAILURE_MSG_FACE_REGISTRATION_INCOMPLETE,
-                        toEmployeeResultList(employeeResults)
-                );
-            }
-            if (app != null) {
-                publishPreparationOutcome(app, registrationOutcome);
-            }
-            InteractionLogger.logBusiness(
-                    InteractionLogger.GROUP_EMPLOYEE_SYNC,
-                    "员工事件增量处理完成",
-                    "新增/更新成功 " + registrationOutcome.succeeded
-                            + "\n新增/更新失败 " + registrationOutcome.failed
-                            + "\n删除/禁用 " + removalTargets.size()
-            );
-            return EmployeeSyncProcessingResult.success(true, finalResults);
-        }
+                "处理当前全部待注册人员");
 
         FaceRegistrationOutcome registrationOutcome = waitForFaceRegistration(context);
         if (!rebuildFinalFaceLibrary(context, app)) {
-            return EmployeeSyncProcessingResult.failure(STATUS_MSG_FACE_LIBRARY_REBUILD_FAILED, new ArrayList<>());
+            return EmployeeSyncProcessingResult.failure(
+                    STATUS_MSG_FACE_LIBRARY_REBUILD_FAILED,
+                    new ArrayList<>());
         }
         boolean ready = registrationOutcome.isUsable() || FaceManager.get().getLoadedFaceCount() > 0;
         if (app != null) {
@@ -833,8 +1054,7 @@ public final class SyncCoordinator {
         InteractionLogger.logBusiness(
                 InteractionLogger.GROUP_EMPLOYEE_SYNC,
                 "准备模式员工同步完成",
-                "可用状态 " + ready + "\n成功 " + registrationOutcome.succeeded + "\n失败 " + registrationOutcome.failed
-        );
+                "可用状态 " + ready + "\n成功 " + registrationOutcome.succeeded + "\n失败 " + registrationOutcome.failed);
         return EmployeeSyncProcessingResult.success(ready, new ArrayList<>());
     }
 
@@ -847,10 +1067,16 @@ public final class SyncCoordinator {
         }
 
         boolean faceUrlChanged = !safeString(existing.faceImageUrl).equals(safeString(incoming.faceImageUrl));
+        boolean faceShaChanged = !isBlank(incoming.faceImageSha256)
+                && !safeString(existing.faceImageSha256).equals(safeString(incoming.faceImageSha256));
+        boolean faceVersionChanged = incoming.faceVersion > 0 && existing.faceVersion != incoming.faceVersion;
         String resolvedFaceStatus = isBlank(incoming.faceStatus)
                 ? safeString(existing.faceStatus)
                 : incoming.faceStatus;
-        boolean faceChanged = hasFaceChanged(existing, incoming);
+        boolean faceStatusChanged = !safeString(existing.faceStatus).equals(safeString(resolvedFaceStatus));
+        boolean reactivated = existing.isDeleted != 0;
+        boolean faceChanged = faceUrlChanged || faceShaChanged || faceVersionChanged || faceStatusChanged
+                || reactivated;
         incoming.name = isBlank(incoming.name) ? existing.name : incoming.name;
         incoming.dept = isBlank(incoming.dept) ? existing.dept : incoming.dept;
         incoming.faceImageSha256 = resolveIncomingFaceSha(existing, incoming, faceUrlChanged);
@@ -867,25 +1093,6 @@ public final class SyncCoordinator {
             incoming.updatedAt = existing.updatedAt;
         }
         return incoming;
-    }
-
-    private boolean hasFaceChanged(Employee existing, Employee incoming) {
-        if (existing == null) {
-            return true;
-        }
-        boolean faceUrlChanged = !safeString(existing.faceImageUrl)
-                .equals(safeString(incoming.faceImageUrl));
-        boolean faceShaChanged = !isBlank(incoming.faceImageSha256)
-                && !safeString(existing.faceImageSha256)
-                .equals(safeString(incoming.faceImageSha256));
-        boolean faceVersionChanged = incoming.faceVersion > 0
-                && existing.faceVersion != incoming.faceVersion;
-        String resolvedFaceStatus = isBlank(incoming.faceStatus)
-                ? safeString(existing.faceStatus)
-                : incoming.faceStatus;
-        boolean faceStatusChanged = !safeString(existing.faceStatus)
-                .equals(safeString(resolvedFaceStatus));
-        return faceUrlChanged || faceShaChanged || faceVersionChanged || faceStatusChanged;
     }
 
     private String resolveIncomingFaceSha(Employee existing, Employee incoming, boolean faceUrlChanged) {
@@ -914,19 +1121,34 @@ public final class SyncCoordinator {
         return true;
     }
 
+    private FacePreparationOutcome waitForFacePreparation(
+            Context context,
+            List<Employee> employees,
+            FaceRegistrationManager.PreparedProgressCallback progressCallback) {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<List<FaceRegistrationManager.PreparedFaceResult>> holder =
+                new AtomicReference<>(new ArrayList<>());
+        FaceRegistrationManager.get().prepareEmployeesForPersistence(
+                context,
+                employees,
+                progressCallback,
+                results -> {
+                    holder.set(results == null ? new ArrayList<>() : results);
+                    latch.countDown();
+                });
+        try {
+            if (!latch.await(FACE_REGISTRATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                return FacePreparationOutcome.timeout(holder.get());
+            }
+            return FacePreparationOutcome.success(holder.get());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return FacePreparationOutcome.timeout(holder.get());
+        }
+    }
+
     private FaceRegistrationOutcome waitForFaceRegistration(Context context) {
         return waitForFaceRegistration(context, null, false);
-    }
-
-    private FaceRegistrationOutcome waitForFaceRegistration(Context context, List<Employee> employees) {
-        return waitForFaceRegistration(context, employees, false);
-    }
-
-    private FaceRegistrationOutcome waitForIncrementalFaceRegistration(
-            Context context,
-            List<Employee> employees
-    ) {
-        return waitForFaceRegistration(context, employees, true);
     }
 
     private boolean rebuildFinalFaceLibrary(Context context, PunchApplication app) {
@@ -947,11 +1169,9 @@ public final class SyncCoordinator {
         return success;
     }
 
-    private FaceRegistrationOutcome waitForFaceRegistration(
-            Context context,
-            List<Employee> employees,
-            boolean addToRuntimeLibrary
-    ) {
+    private FaceRegistrationOutcome waitForFaceRegistration(Context context,
+                                                            List<Employee> employees,
+                                                            boolean addToRuntimeLibrary) {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<List<FaceRegistrationManager.RegistrationResult>> holder =
                 new AtomicReference<>(new ArrayList<>());
@@ -1055,6 +1275,11 @@ public final class SyncCoordinator {
             }
         }
         return java.util.Collections.emptyList();
+    }
+
+    private boolean isFaceEnabled(Employee employee) {
+        return employee != null
+                && "enabled".equalsIgnoreCase(safeString(employee.faceStatus).trim());
     }
 
     private boolean isBlank(String value) {
@@ -1166,6 +1391,19 @@ public final class SyncCoordinator {
         return employeeResults == null ? new ArrayList<>() : new ArrayList<>(employeeResults.values());
     }
 
+    private int countSucceededEmployeeResults(List<EventResultDto.EmployeeResult> results) {
+        int count = 0;
+        if (results == null) {
+            return count;
+        }
+        for (EventResultDto.EmployeeResult result : results) {
+            if (result != null && result.success) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
     private void publishPreparationOutcome(PunchApplication app, FaceRegistrationOutcome outcome) {
         if (app == null || outcome == null) {
             return;
@@ -1218,6 +1456,52 @@ public final class SyncCoordinator {
                     + "，原因=" + safeString(result.failMsg);
         }
         return "";
+    }
+
+    private interface EmployeeBatchProgressCallback {
+        void onProgress(int processed, int total);
+    }
+
+    private static final class EmployeeBatchOutcome {
+        final boolean durableCommitSucceeded;
+        final String failureMessage;
+        final List<EventResultDto.EmployeeResult> employeeResults;
+
+        private EmployeeBatchOutcome(boolean durableCommitSucceeded,
+                                     String failureMessage,
+                                     List<EventResultDto.EmployeeResult> employeeResults) {
+            this.durableCommitSucceeded = durableCommitSucceeded;
+            this.failureMessage = failureMessage;
+            this.employeeResults = employeeResults == null ? new ArrayList<>() : employeeResults;
+        }
+
+        static EmployeeBatchOutcome success(List<EventResultDto.EmployeeResult> employeeResults) {
+            return new EmployeeBatchOutcome(true, null, employeeResults);
+        }
+
+        static EmployeeBatchOutcome failure(String failureMessage,
+                                            List<EventResultDto.EmployeeResult> employeeResults) {
+            return new EmployeeBatchOutcome(false, failureMessage, employeeResults);
+        }
+    }
+
+    private static final class FacePreparationOutcome {
+        final boolean completed;
+        final List<FaceRegistrationManager.PreparedFaceResult> results;
+
+        private FacePreparationOutcome(boolean completed,
+                                       List<FaceRegistrationManager.PreparedFaceResult> results) {
+            this.completed = completed;
+            this.results = results == null ? new ArrayList<>() : results;
+        }
+
+        static FacePreparationOutcome success(List<FaceRegistrationManager.PreparedFaceResult> results) {
+            return new FacePreparationOutcome(true, results);
+        }
+
+        static FacePreparationOutcome timeout(List<FaceRegistrationManager.PreparedFaceResult> results) {
+            return new FacePreparationOutcome(false, results);
+        }
     }
 
     private static final class EmployeeSyncProcessingResult {

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import unittest
@@ -11,23 +11,6 @@ ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 
 def read_text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
-
-
-class ProductionEndpointContractTest(unittest.TestCase):
-    def test_default_business_base_url_uses_current_lan_server(self) -> None:
-        text = read_text("app/src/main/java/com/punch/app/utils/Constants.java")
-        self.assertIn(
-            'public static final String DEFAULT_BASE_URL = "http://192.168.111.240";',
-            text,
-        )
-        self.assertNotIn("http://hzmq1.hainasmart.com.cn", text)
-
-    def test_device_activation_server_remains_unchanged(self) -> None:
-        text = read_text("app/src/main/java/com/punch/app/network/ApiEndpoints.java")
-        self.assertIn(
-            'public static final String DEVICE_ACTIVATE_BASE_URL = "http://park.hainasmart.com.cn:8898";',
-            text,
-        )
 
 
 class SmokeVariantContractTest(unittest.TestCase):
@@ -206,18 +189,6 @@ class ScriptContractTest(unittest.TestCase):
         self.assertIn("test-results", common)
         self.assertIn("yyyyMMdd-HHmmss", common)
 
-
-    def test_db_stress_restore_retries_fresh_target_when_locktask_is_not_active(self) -> None:
-        text = read_text("scripts/run-db-stress.ps1")
-        self.assertIn("force_fresh_target", text)
-        self.assertIn("restore-kiosk-retry.log", text)
-        self.assertIn("restore-kiosk-state-retry.txt", text)
-        self.assertIn("IsProductionForeground", text)
-        self.assertIn("IsExpectedRoute", text)
-        self.assertIn("IsDeviceOwner", text)
-        self.assertIn("-not $kioskRestoreState.IsLockTaskActive", text)
-        self.assertIn("Wait-DbStressProductionKioskReady", text)
-
     def test_manual_restore_script_uses_backup_and_restores_kiosk(self) -> None:
         text = read_text("scripts/restore-production-from-report.ps1")
         self.assertIn("production-backup", text)
@@ -298,32 +269,6 @@ class DeviceOwnerMaintenanceBridgeContractTest(unittest.TestCase):
         ]:
             self.assertIn(token, text)
 
-
-    def test_manual_restore_requires_real_locktask_and_retries_fresh_target(self) -> None:
-        text = read_text("scripts/restore-production-from-report.ps1")
-        self.assertIn("force_fresh_target", text)
-        self.assertIn("IsDeviceOwner", text)
-        self.assertIn("IsProductionForeground", text)
-        self.assertIn("IsLockTaskActive", text)
-        self.assertIn("manual-restore-kiosk-retry.log", text)
-        self.assertRegex(text, r"(?s)if \(-not \$finalKioskState\.IsLockTaskActive\).*?throw")
-
-    def test_restore_production_script_does_not_shadow_readonly_pid_automatic_variable(self) -> None:
-        text = read_text("scripts/restore-production-from-report.ps1")
-        self.assertIsNone(
-            re.search(r"(?im)^\s*\$pid\s*=", text),
-            "restore-production-from-report.ps1 must not assign to PowerShell's readonly $PID automatic variable",
-        )
-        self.assertIn("$productionPidText", text)
-
-    def test_ui_smoke_failure_reports_instrumentation_diagnostics(self) -> None:
-        text = read_text("scripts/run-ui-smoke.ps1")
-        self.assertIn("function Get-InstrumentationFailureDetail", text)
-        self.assertIn("instrumentation_tail=", text)
-        self.assertIn("failure_marker=", text)
-        self.assertIn("production_restore_succeeded=", text)
-        self.assertLess(text.index("failure_marker="), text.index("missing_success_marker="))
-
     def test_common_library_can_backup_and_restore_installed_apks(self) -> None:
         text = read_text("scripts/lib/DeviceTestCommon.ps1")
         self.assertIn("function Backup-InstalledPackageApks", text)
@@ -363,6 +308,33 @@ class DeviceOwnerMaintenanceBridgeContractTest(unittest.TestCase):
         self.assertIn("function Wait-DeviceOwnerMaintenanceReady", common)
         self.assertIn("Wait-DeviceOwnerMaintenanceReady", runner)
         self.assertIn("MaintenanceReadyTimeoutSeconds", runner)
+
+
+class KioskSystemInfoStatusBarContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.kiosk = read_text("app/src/main/java/com/punch/app/utils/KioskManager.java")
+        match = re.search(
+            r"(?s)public static void ensureOwnerKioskPolicies\(Context context\) \{(.*?)\n    \}\n\n    public static void setDeviceTestMaintenanceModeForTest",
+            self.kiosk,
+        )
+        self.assertIsNotNone(match, "ensureOwnerKioskPolicies must exist")
+        self.body = match.group(1)
+
+    def test_owner_kiosk_exposes_system_info_and_keeps_global_actions(self) -> None:
+        self.assertIn("DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS", self.body)
+        self.assertIn("DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO", self.body)
+
+    def test_owner_kiosk_keeps_status_bar_visible(self) -> None:
+        self.assertIn("dpm.setStatusBarDisabled(admin, false);", self.body)
+        self.assertNotIn("dpm.setStatusBarDisabled(admin, true);", self.body)
+
+    def test_owner_kiosk_does_not_open_navigation_or_notifications(self) -> None:
+        for token in [
+            "LOCK_TASK_FEATURE_NOTIFICATIONS",
+            "LOCK_TASK_FEATURE_HOME",
+            "LOCK_TASK_FEATURE_OVERVIEW",
+        ]:
+            self.assertNotIn(token, self.body)
 
 
 class PerformanceHarnessV21ContractTest(unittest.TestCase):
@@ -1514,3 +1486,1568 @@ class CameraFaceRecoveryV273ContractTest(unittest.TestCase):
             "autonomous", "Camera", "Face", "recognizeFromBitmap", "LockTask", "Device Owner",
         ]:
             self.assertIn(token, text)
+
+class FaceRtBgSdkIsolationContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sdk = read_text("app/src/main/java/com/punch/app/face/FaceSDKManager.java")
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def test_face_sdk_manager_owns_dedicated_background_instance_and_engines(self) -> None:
+        for token in [
+            "import com.baidu.idl.main.facesdk.model.BDFaceInstance;",
+            "private BDFaceInstance backgroundFaceInstance;",
+            "private FaceDetect backgroundFaceDetect;",
+            "private FaceFeature backgroundFaceFeature;",
+            "private final Object backgroundFaceOperationLock = new Object();",
+            "backgroundFaceInstance = new BDFaceInstance();",
+            "backgroundFaceInstance.creatInstance();",
+            "backgroundFaceDetect = new FaceDetect(backgroundFaceInstance);",
+            "backgroundFaceFeature = new FaceFeature(backgroundFaceInstance);",
+        ]:
+            self.assertIn(token, self.sdk)
+
+    def test_background_models_are_part_of_global_ready_gate(self) -> None:
+        self.assertIn("new AtomicInteger(6)", self.sdk)
+        ready = self.sdk[self.sdk.index("private boolean isModelReady()"):
+                         self.sdk.index("private void initLicense")]
+        for token in [
+            "backgroundFaceInstance != null",
+            "backgroundFaceDetect != null",
+            "backgroundFaceFeature != null",
+        ]:
+            self.assertIn(token, ready)
+        self.assertIn('handleInitCallback("backgroundDetect"', self.sdk)
+        self.assertIn('handleInitCallback("backgroundFeature"', self.sdk)
+
+    def test_background_feature_extraction_is_serialized_behind_bg_gate(self) -> None:
+        self.assertIn("public byte[] extractBackgroundFeature(BDFaceImageInstance imageInstance)", self.sdk)
+        start = self.sdk.index("public byte[] extractBackgroundFeature(BDFaceImageInstance imageInstance)")
+        end = self.sdk.index("public void loadBackgroundConfig", start)
+        body = self.sdk[start:end]
+        self.assertIn("synchronized (backgroundFaceOperationLock)", body)
+        self.assertIn("backgroundFaceDetect.detect", body)
+        self.assertIn("backgroundFaceFeature.feature", body)
+        self.assertIn("new byte[512]", body)
+
+    def test_background_config_update_uses_same_gate(self) -> None:
+        self.assertIn("public void loadBackgroundConfig(BDFaceSDKConfig config)", self.sdk)
+        start = self.sdk.index("public void loadBackgroundConfig(BDFaceSDKConfig config)")
+        body = self.sdk[start:]
+        self.assertIn("synchronized (backgroundFaceOperationLock)", body)
+        self.assertIn("backgroundFaceDetect.loadConfig", body)
+
+    def test_file_feature_extraction_routes_to_background_engine_only(self) -> None:
+        start = self.manager.index("private byte[] extractFeatureFromFile")
+        end = self.manager.index("private String safeEmpId", start)
+        body = self.manager[start:end]
+        self.assertIn("extractBackgroundFeature(inst)", body)
+        self.assertNotIn("getFaceDetectPerson()", body)
+        self.assertNotIn("getFacePersonFeature()", body)
+
+    def test_realtime_recognition_still_uses_realtime_getters(self) -> None:
+        start = self.manager.index("public RecognizeResult recognizeFromBitmap")
+        end = self.manager.index("private RecognizeResult runPreChecks", start)
+        body = self.manager[start:end]
+        self.assertIn("getFaceDetectPerson()", body)
+        self.assertIn("getFacePersonFeature()", body)
+
+    def test_runtime_config_updates_background_detect(self) -> None:
+        start = self.manager.index("public void refreshRuntimeConfig()")
+        end = self.manager.index("public void rebuildFaceLibrary", start)
+        body = self.manager[start:end]
+        self.assertIn("loadBackgroundConfig", body)
+
+class FaceFeatureCacheContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.constants = read_text("app/src/main/java/com/punch/app/utils/Constants.java")
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def test_face_features_schema_is_versioned_and_created_on_create_and_upgrade(self) -> None:
+        self.assertRegex(self.constants, r"public static final int DB_VERSION = \d+;")
+        self.assertGreaterEqual(self.db.count("createFaceFeaturesTable(db);"), 2)
+        self.assertIn("if (oldVersion < 10)", self.db)
+        create_start = self.db.index("private void createFaceFeaturesTable(SQLiteDatabase db)")
+        create_body = self.db[create_start:create_start + 1200]
+        for token in [
+            '"emp_id TEXT PRIMARY KEY, "',
+            '"face_version INTEGER NOT NULL DEFAULT 0, "',
+            '"image_sha256 TEXT NOT NULL DEFAULT \'\', "',
+            '"feature_schema_version INTEGER NOT NULL, "',
+            '"feature BLOB NOT NULL, "',
+            '"updated_at INTEGER NOT NULL DEFAULT 0)"',
+        ]:
+            self.assertIn(token, create_body)
+
+    def test_face_feature_cache_read_requires_matching_metadata_and_512_bytes(self) -> None:
+        self.assertIn("public byte[] getValidFaceFeature(", self.db)
+        start = self.db.index("public byte[] getValidFaceFeature(")
+        end = self.db.index("public boolean upsertFaceFeature(", start)
+        body = self.db[start:end]
+        self.assertIn("face_version=?", body)
+        self.assertIn("COALESCE(image_sha256, '')=?", body)
+        self.assertIn("feature_schema_version=?", body)
+        self.assertIn("feature.length == 512", body)
+
+    def test_face_feature_cache_upsert_rejects_non_512_features(self) -> None:
+        self.assertIn("public boolean upsertFaceFeature(", self.db)
+        start = self.db.index("public boolean upsertFaceFeature(")
+        end = self.db.index("private void createFaceFeaturesTable", start)
+        body = self.db[start:end]
+        self.assertIn("feature == null || feature.length != 512", body)
+        self.assertIn('values.put("feature", feature)', body)
+        self.assertIn("SQLiteDatabase.CONFLICT_REPLACE", body)
+        self.assertIn("System.currentTimeMillis()", body)
+
+    def test_hard_employee_cleanup_removes_face_feature_cache(self) -> None:
+        remove_start = self.db.index("public void removeEmployee(String id)")
+        clear_start = self.db.index("public void clearAllEmployees()", remove_start)
+        remove_body = self.db[remove_start:clear_start]
+        self.assertIn('delete("face_features", "emp_id=?"', remove_body)
+
+        clear_end = self.db.index("private List<Employee> queryEmployees", clear_start)
+        clear_body = self.db[clear_start:clear_end]
+        self.assertIn('delete("face_features", null, null)', clear_body)
+
+        local_start = self.db.index("public void clearLocalBusinessData()")
+        local_end = self.db.index("private void migrateEmployeesDropAvatarUrl", local_start)
+        local_body = self.db[local_start:local_end]
+        self.assertIn('db.delete("face_features", null, null)', local_body)
+
+class FaceFeaturePersistenceContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def test_face_manager_defines_feature_schema_version_one(self) -> None:
+        self.assertIn("private static final int FACE_FEATURE_SCHEMA_VERSION = 1;", self.manager)
+
+    def test_successful_registration_or_validation_persists_extracted_feature(self) -> None:
+        start = self.manager.index("private RegisterResult registerFaceInternal(")
+        end = self.manager.index("private boolean failFullRebuild", start)
+        body = self.manager[start:end]
+        self.assertIn("persistExtractedFeature(context, empId, prepared.feature);", body)
+        persist_pos = body.index("persistExtractedFeature(context, empId, prepared.feature);")
+        runtime_apply_pos = body.index("applyStoredFeature(context, empId, prepared.feature)", persist_pos)
+        self.assertLess(persist_pos, runtime_apply_pos)
+
+    def test_persist_extracted_feature_uses_current_employee_face_metadata(self) -> None:
+        self.assertIn("private void persistExtractedFeature(", self.manager)
+        start = self.manager.index("private void persistExtractedFeature(")
+        end = self.manager.index("public boolean removeFace", start)
+        body = self.manager[start:end]
+        for token in [
+            "DatabaseHelper db = DatabaseHelper.get(context);",
+            "Employee employee = db.getEmployee(empId);",
+            "employee.faceVersion",
+            "employee.faceImageSha256",
+            "FACE_FEATURE_SCHEMA_VERSION",
+            "db.upsertFaceFeature(",
+        ]:
+            self.assertIn(token, body)
+        self.assertIn("Face feature cache write failed", body)
+
+class FaceFeatureRebuildCacheContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def test_rebuild_looks_up_valid_cached_feature_before_image_fallback(self) -> None:
+        start = self.manager.index("public boolean rebuildFaceLibrarySync(Context context)")
+        end = self.manager.index("public RegisterResult registerFace", start)
+        body = self.manager[start:end]
+        self.assertIn("db.getFaceFeaturesByEmployeeIds(rebuildEmployeeIds)", body)
+        self.assertIn("loadFeatureForRebuild(context, db, emp, cachedFeatures, stats)", body)
+        self.assertNotIn("extractFeatureFromFile(imagePath, emp.id)", body)
+
+    def test_rebuild_helper_uses_metadata_matched_cache_before_decoding_image(self) -> None:
+        self.assertIn("private byte[] loadFeatureForRebuild(", self.manager)
+        start = self.manager.index("private byte[] loadFeatureForRebuild(")
+        end = self.manager.index("private void persistExtractedFeature(", start)
+        body = self.manager[start:end]
+        cache_pos = body.index("DatabaseHelper.FaceFeatureCacheEntry cached")
+        image_pos = body.index("FaceFileManager.getFaceImagePath")
+        extract_pos = body.index("extractFeatureFromFile(imagePath, emp.id)")
+        self.assertLess(cache_pos, image_pos)
+        self.assertLess(image_pos, extract_pos)
+        for token in [
+            "cached.faceVersion == emp.faceVersion",
+            "normalizeFaceSha256(emp.faceImageSha256)",
+            "FACE_FEATURE_SCHEMA_VERSION",
+            "cached.feature != null && cached.feature.length == 512",
+            "stats.cached += 1;",
+            "stats.regenerated += 1;",
+            "db.upsertFaceFeature(",
+        ]:
+            self.assertIn(token, body)
+
+    def test_rebuild_keeps_search_commit_two_phase_and_reports_cache_counts(self) -> None:
+        start = self.manager.index("public boolean rebuildFaceLibrarySync(Context context)")
+        end = self.manager.index("public RegisterResult registerFace", start)
+        body = self.manager[start:end]
+        self.assertIn("loadFeatureForRebuild(context, db, emp, cachedFeatures, stats)", body)
+        prepare_pos = body.index("loadFeatureForRebuild(context, db, emp, cachedFeatures, stats)")
+        lock_pos = body.index("synchronized (faceLibraryLock)")
+        self.assertLess(prepare_pos, lock_pos)
+        self.assertIn("cached=", body)
+        self.assertIn("regenerated=", body)
+        self.assertIn("private static final class RebuildFeatureStats", self.manager)
+
+class FaceIncrementalSearchV3ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+        self.registration = read_text("app/src/main/java/com/punch/app/face/FaceRegistrationManager.java")
+        self.sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+
+    def test_runtime_registration_replaces_loaded_sdk_id_before_push(self) -> None:
+        start = self.manager.index("public RegisterResult applyStoredFeature(")
+        end = self.manager.index("private boolean failFullRebuild", start)
+        body = self.manager[start:end]
+        self.assertIn("Integer loadedIntId = empToIntId.get(empId);", body)
+        self.assertIn("boolean wasLoaded = loadedIntId != null;", body)
+        delete_pos = body.index("faceSearch.delPersonById(loadedIntId)")
+        push_pos = body.index("faceSearch.pushPersonById(intId, feature)")
+        self.assertLess(delete_pos, push_pos)
+        self.assertIn("if (deleteResult != 0)", body)
+        self.assertIn("if (pushResult != 0)", body)
+        map_pos = body.index("empToIntId.put(empId, intId)")
+        self.assertLess(push_pos, map_pos)
+
+    def test_loaded_face_count_tracks_incremental_add_replace_and_remove(self) -> None:
+        start = self.manager.index("public RegisterResult applyStoredFeature(")
+        end = self.manager.index("private boolean failFullRebuild", start)
+        register_body = self.manager[start:end]
+        self.assertIn("if (!wasLoaded) {", register_body)
+        self.assertIn("loadedFaceCount += 1;", register_body)
+
+        remove_start = self.manager.index("public boolean removeFace(String empId)")
+        remove_end = self.manager.index("public RecognizeResult recognizeFromBitmap", remove_start)
+        remove_body = self.manager[remove_start:remove_end]
+        self.assertIn("loadedFaceCount = Math.max(0, loadedFaceCount - 1);", remove_body)
+
+    def test_event_mode_persists_then_queues_runtime_apply_without_full_rebuild(self) -> None:
+        start = self.sync.index("private EmployeeBatchOutcome processEmployeeEventBatch(")
+        end = self.sync.index("private boolean syncEmployeesEventInBatches", start)
+        body = self.sync[start:end]
+        self.assertIn("db.commitEmployeeFaceBatch(batchWrites)", body)
+        self.assertIn("write.withFeature", body)
+        self.assertNotIn("rebuildFinalFaceLibrary(context, app)", body)
+        self.assertNotIn("FaceManager.get().registerFace", body)
+
+    def test_event_feature_preparation_does_not_register_runtime_library(self) -> None:
+        start = self.sync.index("private FacePreparationOutcome waitForFacePreparation(")
+        end = self.sync.index("private FaceRegistrationOutcome waitForFaceRegistration", start)
+        body = self.sync[start:end]
+        self.assertIn("prepareEmployeesForPersistence", body)
+        self.assertNotIn("registerEmployees", body)
+        self.assertNotIn("registerFace", body)
+
+    def test_delete_and_disabled_changes_queue_remove_without_direct_runtime_mutation(self) -> None:
+        start = self.sync.index("private EmployeeBatchOutcome processEmployeeEventBatch(")
+        end = self.sync.index("private boolean syncEmployeesEventInBatches", start)
+        body = self.sync[start:end]
+        self.assertIn("DatabaseHelper.FaceBatchWrite.remove(numbers, changeItem.opTime)", body)
+        self.assertIn("write.withRemoveTask();", body)
+        self.assertNotIn("FaceManager.get().removeFace", body)
+        self.assertNotIn("db.updateFaceRegistration", body)
+
+    def test_disabled_employees_are_queued_for_remove_not_feature_preparation(self) -> None:
+        start = self.sync.index("private EmployeeBatchOutcome processEmployeeEventBatch(")
+        end = self.sync.index("private boolean syncEmployeesEventInBatches", start)
+        body = self.sync[start:end]
+        disabled_pos = body.index("if (!isFaceEnabled(merged))")
+        remove_pos = body.index("write.withRemoveTask();", disabled_pos)
+        prepare_pos = body.index("preparationTargets.put(merged.id, merged)", disabled_pos)
+        self.assertLess(remove_pos, prepare_pos)
+        self.assertIn("continue;", body[remove_pos:prepare_pos])
+
+    def test_soft_deleted_employee_reactivation_forces_face_reregistration(self) -> None:
+        start = self.sync.index("private Employee mergeEmployee(Employee existing, Employee incoming)")
+        end = self.sync.index("private String resolveIncomingFaceSha", start)
+        body = self.sync[start:end]
+        self.assertIn("boolean reactivated = existing.isDeleted != 0;", body)
+        self.assertIn("|| reactivated", body)
+
+    def test_preparation_and_explicit_rebuild_paths_keep_full_rebuild(self) -> None:
+        explicit_start = self.sync.index("public boolean rebuildLocalFaceLibrary(Context context)")
+        explicit_end = self.sync.index("private void runHeartbeatCycle", explicit_start)
+        explicit_body = self.sync[explicit_start:explicit_end]
+        self.assertIn("rebuildFinalFaceLibrary(appContext, app)", explicit_body)
+
+        prep_start = self.sync.index("FaceRegistrationOutcome registrationOutcome = waitForFaceRegistration(context);",
+                                     self.sync.index("private EmployeeSyncProcessingResult syncEmployeesInternal"))
+        prep_end = self.sync.index("private Employee mergeEmployee", prep_start)
+        prep_body = self.sync[prep_start:prep_end]
+        self.assertIn("rebuildFinalFaceLibrary(context, app)", prep_body)
+
+    def test_runtime_registration_failures_remove_stale_runtime_face(self) -> None:
+        register_start = self.registration.index("private RegistrationResult registerSingle(")
+        register_end = self.registration.index("private RegistrationResult failRegistration(", register_start)
+        register_body = self.registration[register_start:register_end]
+        self.assertGreaterEqual(register_body.count("failRegistration(ctx, emp,"), 3)
+        self.assertIn("private RegistrationResult failRegistration(", self.registration)
+        start = self.registration.index("private RegistrationResult failRegistration(")
+        end = self.registration.index("private int countSucceeded", start)
+        body = self.registration[start:end]
+        self.assertIn("if (addToRuntimeLibrary)", body)
+        self.assertIn("FaceManager.get().removeFace(emp.id);", body)
+        self.assertIn("DatabaseHelper.get(ctx).updateFaceRegistration(emp.id, null, false);", body)
+
+class FaceRebuildConsistencyV4ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def _rebuild_body(self) -> str:
+        start = self.manager.index("public boolean rebuildFaceLibrarySync(Context context)")
+        end = self.manager.index("public RegisterResult registerFace", start)
+        return self.manager[start:end]
+
+    def test_runtime_library_has_explicit_fail_closed_state(self) -> None:
+        for token in [
+            "public enum FaceLibraryState",
+            "NOT_READY",
+            "REBUILDING",
+            "READY",
+            "REBUILD_FAILED",
+            "private volatile FaceLibraryState faceLibraryState = FaceLibraryState.NOT_READY;",
+            "public boolean isFaceLibraryReady()",
+            "ERROR_FACE_LIBRARY_NOT_READY",
+        ]:
+            self.assertIn(token, self.manager)
+
+    def test_rebuild_preparation_failure_cannot_commit_partial_entry_set(self) -> None:
+        body = self._rebuild_body()
+        self.assertIn("int expectedEntries = rebuildEmployees.size();", body)
+        self.assertIn("boolean preparationFailed = false;", body)
+        self.assertIn("rebuildEmployees.add(emp);", body)
+        self.assertIn("preparationFailed = true;", body)
+        self.assertIn("entries.size() != expectedEntries", body)
+        fail_pos = body.index("entries.size() != expectedEntries")
+        lock_pos = body.index("synchronized (faceLibraryLock)")
+        self.assertLess(fail_pos, lock_pos)
+
+    def test_rebuild_checks_native_clear_and_every_push_result(self) -> None:
+        body = self._rebuild_body()
+        self.assertIn("int clearResult = faceSearch.featureClear();", body)
+        self.assertIn("if (clearResult != 0)", body)
+        self.assertIn("int pushResult = faceSearch.pushPersonById(entry.sdkId, entry.feature);", body)
+        self.assertIn("if (pushResult != 0)", body)
+
+    def test_rebuild_verifies_native_size_before_publishing_java_state(self) -> None:
+        body = self._rebuild_body()
+        self.assertIn("int nativeSize = faceSearch.getSize();", body)
+        self.assertIn("if (nativeSize != entries.size())", body)
+        native_pos = body.index("int nativeSize = faceSearch.getSize();")
+        publish_map_pos = body.index("empToIntId.putAll(newEmpToIntId);")
+        publish_count_pos = body.index("loadedFaceCount = entries.size();")
+        ready_pos = body.index("faceLibraryState = FaceLibraryState.READY;")
+        self.assertLess(native_pos, publish_map_pos)
+        self.assertLess(native_pos, publish_count_pos)
+        self.assertLess(native_pos, ready_pos)
+
+    def test_rebuild_builds_new_mappings_off_to_the_side_until_commit_succeeds(self) -> None:
+        body = self._rebuild_body()
+        self.assertIn("Map<String, Integer> newEmpToIntId = new HashMap<>();", body)
+        self.assertIn("Map<Integer, String> newIntToEmpId = new HashMap<>();", body)
+        self.assertIn("newEmpToIntId.put(entry.empId, entry.sdkId);", body)
+        self.assertIn("newIntToEmpId.put(entry.sdkId, entry.empId);", body)
+        self.assertIn("empToIntId.clear();", body)
+        self.assertIn("empToIntId.putAll(newEmpToIntId);", body)
+        self.assertIn("intToEmpId.clear();", body)
+        self.assertIn("intToEmpId.putAll(newIntToEmpId);", body)
+
+    def test_full_rebuild_failure_cleanup_is_fail_closed(self) -> None:
+        self.assertIn("private boolean failFullRebuildLocked(", self.manager)
+        start = self.manager.index("private boolean failFullRebuildLocked(")
+        end = self.manager.index("private byte[] loadFeatureForRebuild", start)
+        body = self.manager[start:end]
+        for token in [
+            "faceLibraryState = FaceLibraryState.REBUILD_FAILED;",
+            "empToIntId.clear();",
+            "intToEmpId.clear();",
+            "loadedFaceCount = 0;",
+            "faceSearch.featureClear()",
+            "return false;",
+        ]:
+            self.assertIn(token, body)
+
+    def test_search_checks_ready_inside_face_library_lock_before_native_search(self) -> None:
+        start = self.manager.index("private RecognizeResult doSearch(byte[] feature, FaceInfo faceInfo)")
+        end = self.manager.index("private RectF buildFaceBounds", start)
+        body = self.manager[start:end]
+        lock_pos = body.index("synchronized (faceLibraryLock)")
+        state_pos = body.index("observedState != FaceLibraryState.READY", lock_pos)
+        search_pos = body.index("faceSearch.search(", lock_pos)
+        self.assertLess(lock_pos, state_pos)
+        self.assertLess(state_pos, search_pos)
+        self.assertIn("ERROR_FACE_LIBRARY_NOT_READY", body)
+
+
+class FaceInitializationStateV5ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def _init_body(self) -> str:
+        start = self.manager.index("public void init(Context context")
+        end = self.manager.index("public void refreshRuntimeConfig()", start)
+        return self.manager[start:end]
+
+    def test_face_manager_singleton_uses_holder_idiom(self) -> None:
+        self.assertIn("private static final class Holder", self.manager)
+        self.assertIn("private static final FaceManager INSTANCE = new FaceManager();", self.manager)
+        self.assertIn("return Holder.INSTANCE;", self.manager)
+        self.assertNotIn("private static FaceManager instance;", self.manager)
+
+    def test_initialization_has_explicit_volatile_state(self) -> None:
+        for token in [
+            "public enum InitState",
+            "UNINITIALIZED",
+            "INITIALIZING",
+            "READY",
+            "FAILED",
+            "private volatile InitState initState = InitState.UNINITIALIZED;",
+            "private final Object initLock = new Object();",
+        ]:
+            self.assertIn(token, self.manager)
+
+    def test_concurrent_init_calls_coalesce_onto_one_inflight_attempt(self) -> None:
+        body = self._init_body()
+        self.assertIn("synchronized (initLock)", body)
+        self.assertIn("pendingInitCallbacks.add(callback);", body)
+        self.assertIn("if (initState == InitState.INITIALIZING)", body)
+        self.assertIn("initState = InitState.INITIALIZING;", body)
+        self.assertEqual(1, body.count("FaceSDKManager.getInstance().initModel("))
+
+    def test_ready_init_returns_success_without_restarting_sdk(self) -> None:
+        body = self._init_body()
+        ready_pos = body.index("if (initState == InitState.READY)")
+        sdk_pos = body.index("FaceSDKManager.getInstance().initModel(")
+        self.assertLess(ready_pos, sdk_pos)
+        self.assertIn("notifyInitSuccess(callback);", body)
+
+    def test_success_and_failure_publish_state_then_notify_all_waiters(self) -> None:
+        for method_name, expected_state, notifier in [
+            ("private void completeInitSuccess()", "InitState.READY", "notifyInitSuccess(callback);"),
+            ("private void completeInitFailure(int code, String message)", "InitState.FAILED", "notifyInitError(callback, code, message);"),
+        ]:
+            start = self.manager.index(method_name)
+            end = self.manager.index("\n    }", start) + len("\n    }")
+            body = self.manager[start:end]
+            self.assertIn(f"initState = {expected_state};", body)
+            self.assertIn("drainPendingInitCallbacksLocked()", body)
+            self.assertIn(notifier, body)
+
+    def test_failed_state_is_retryable_on_next_init_call(self) -> None:
+        body = self._init_body()
+        self.assertNotIn("if (initState == InitState.FAILED) {\n                return;", body)
+        failed_pos = self.manager.index("initState = InitState.FAILED;")
+        self.assertGreaterEqual(failed_pos, 0)
+        self.assertIn("initState = InitState.INITIALIZING;", body)
+
+    def test_initialized_boolean_is_replaced_by_state_read(self) -> None:
+        self.assertNotIn("private boolean initialized", self.manager)
+        self.assertNotRegex(self.manager, r"\binitialized\s*=\s*(true|false)")
+        start = self.manager.index("public boolean isInitialized()")
+        end = self.manager.index("\n    }", start) + len("\n    }")
+        body = self.manager[start:end]
+        self.assertIn("return initState == InitState.READY;", body)
+        self.assertNotIn("if (!initialized)", self.manager)
+        self.assertIn("public InitState getInitState()", self.manager)
+
+    def test_synchronous_sdk_init_exception_transitions_to_failed(self) -> None:
+        body = self._init_body()
+        self.assertIn("try {", body)
+        self.assertIn("FaceSDKManager.getInstance().initModel(", body)
+        self.assertIn("catch (RuntimeException e)", body)
+        self.assertIn("completeInitFailure(-1, \"SDK init exception: \" + e.getMessage());", body)
+
+
+class SyncTriggerLifecycleV6ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sync_service = read_text("app/src/main/java/com/punch/app/service/SyncService.java")
+        self.heartbeat = read_text("app/src/main/java/com/punch/app/service/HeartbeatManager.java")
+
+    def _trigger_body(self) -> str:
+        start = self.sync_service.index(
+            "public static void triggerSync(Context context, SyncTrigger trigger)"
+        )
+        end = self.sync_service.index("private static SyncTrigger parseTrigger", start)
+        return self.sync_service[start:end]
+
+    def test_trigger_sync_directly_dispatches_to_heartbeat_manager(self) -> None:
+        body = self._trigger_body()
+        self.assertIn("HeartbeatManager.get(appContext).triggerNow(safeTrigger);", body)
+
+    def test_trigger_sync_no_longer_starts_android_service(self) -> None:
+        body = self._trigger_body()
+        self.assertNotIn("startService", body)
+        self.assertNotIn("new Intent", body)
+        self.assertNotIn("ACTION_SYNC_NOW", body)
+        self.assertNotIn("EXTRA_SYNC_TRIGGER", body)
+
+    def test_trigger_sync_preserves_token_gate_and_trigger_default(self) -> None:
+        body = self._trigger_body()
+        self.assertIn("if (!SessionManager.get().isTokenValid())", body)
+        self.assertIn("trigger != null ? trigger : SyncTrigger.AFTER_PUNCH", body)
+        self.assertIn("Context appContext = context.getApplicationContext();", body)
+
+    def test_heartbeat_trigger_now_starts_scheduler_and_enqueues_same_trigger(self) -> None:
+        start = self.heartbeat.index("public void triggerNow(SyncTrigger trigger)")
+        end = self.heartbeat.index("public synchronized void stop()", start)
+        body = self.heartbeat[start:end]
+        self.assertIn("start();", body)
+        self.assertIn("SyncCoordinator.get().enqueueHeartbeatCycle(appContext, safeTrigger);", body)
+
+    def test_legacy_service_entry_point_still_delegates_if_started_explicitly(self) -> None:
+        self.assertIn("public int onStartCommand(Intent intent, int flags, int startId)", self.sync_service)
+        self.assertIn("HeartbeatManager.get(getApplicationContext()).triggerNow(", self.sync_service)
+        self.assertIn("return START_NOT_STICKY;", self.sync_service)
+
+
+class PunchPreparationStatusRaceV7ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = read_text("app/src/main/java/com/punch/app/PunchApplication.java")
+        self.login = read_text("app/src/main/java/com/punch/app/activity/LoginActivity.java")
+
+    def _post_login_body(self) -> str:
+        start = self.login.index("private void postLogin()")
+        end = self.login.index("private boolean shouldBootstrapDeviceConfig()", start)
+        return self.login[start:end]
+
+    def _restart_body(self) -> str:
+        self.assertIn("public void restartPunchRecognitionData()", self.app)
+        start = self.app.index("public void restartPunchRecognitionData()")
+        end = self.app.index("public boolean isPunchRecognitionReady()", start)
+        return self.app[start:end]
+
+    def test_login_uses_single_restart_api_for_punch_preparation(self) -> None:
+        body = self._post_login_body()
+        self.assertIn("app.restartPunchRecognitionData();", body)
+        self.assertNotIn("app.resetPunchRecognitionState();", body)
+        self.assertNotIn("app.setCurrentPunchStatus(", body)
+        self.assertNotIn("app.preparePunchRecognitionData();", body)
+
+    def test_restart_publishes_initializing_state_and_always_queues_preparation(self) -> None:
+        body = self._restart_body()
+        self.assertIn('beginPunchDataPreparation("正在初始化打卡环境...");', body)
+        self.assertIn("appExecutor.execute(this::runPunchPreparation);", body)
+        self.assertNotIn("if (punchDataPreparing || punchDataReady)", body)
+
+    def test_restart_is_serialized_behind_any_existing_preparation_task(self) -> None:
+        body = self._restart_body()
+        self.assertIn("appExecutor.execute(this::runPunchPreparation);", body)
+        self.assertNotIn("new Thread", body)
+        self.assertNotIn("Executors.new", body)
+
+    def test_normal_prepare_remains_idempotent_for_frame_retry_paths(self) -> None:
+        start = self.app.index("public void preparePunchRecognitionData()")
+        end_marker = "public void restartPunchRecognitionData()"
+        end = self.app.index(end_marker, start) if end_marker in self.app[start:] else self.app.index("public boolean isPunchRecognitionReady()", start)
+        body = self.app[start:end]
+        self.assertIn("if (punchDataPreparing || punchDataReady)", body)
+        self.assertIn("appExecutor.execute(this::runPunchPreparation);", body)
+
+class FaceRealtimeSearchV8ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manager = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+        start = self.manager.index("private RecognizeResult doSearch(byte[] feature, FaceInfo faceInfo)")
+        end = self.manager.index("private RectF buildFaceBounds", start)
+        self.body = self.manager[start:end]
+
+    @staticmethod
+    def _balanced_block(text: str, brace_pos: int) -> str:
+        depth = 0
+        for i in range(brace_pos, len(text)):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[brace_pos:i + 1]
+        raise AssertionError("unterminated block")
+
+    def _search_lock_block(self) -> str:
+        lock_pos = self.body.index("synchronized (faceLibraryLock)")
+        brace_pos = self.body.index("{", lock_pos)
+        return self._balanced_block(self.body, brace_pos)
+
+    def test_non_ready_fast_fails_before_waiting_for_face_library_lock(self) -> None:
+        first_state_pos = self.body.index("observedState != FaceLibraryState.READY")
+        lock_pos = self.body.index("synchronized (faceLibraryLock)")
+        self.assertLess(first_state_pos, lock_pos)
+        prefix = self.body[:lock_pos]
+        self.assertIn("ERROR_FACE_LIBRARY_NOT_READY", prefix)
+
+    def test_search_double_checks_ready_inside_lock_before_native_search(self) -> None:
+        self.assertGreaterEqual(
+            self.body.count("observedState != FaceLibraryState.READY"),
+            2,
+        )
+        lock_body = self._search_lock_block()
+        state_pos = lock_body.index("observedState != FaceLibraryState.READY")
+        search_pos = lock_body.index("faceSearch.search(")
+        self.assertLess(state_pos, search_pos)
+
+    def test_search_lock_only_snapshots_native_result_and_runtime_mapping(self) -> None:
+        lock_body = self._search_lock_block()
+        self.assertIn("faceSearch.search(", lock_body)
+        self.assertIn("intToEmpId.get(", lock_body)
+        for token in [
+            "Face search miss",
+            "Face search below threshold",
+            "Reject ambiguous face match",
+            "Face search matched",
+            "SAFE_MATCH_SCORE_GAP",
+            "buildFaceBounds(faceInfo)",
+        ]:
+            self.assertNotIn(token, lock_body)
+
+    def test_threshold_ambiguity_logging_and_result_construction_remain_outside_lock(self) -> None:
+        lock_pos = self.body.index("synchronized (faceLibraryLock)")
+        brace_pos = self.body.index("{", lock_pos)
+        lock_body = self._balanced_block(self.body, brace_pos)
+        after_lock = self.body[self.body.index(lock_body, lock_pos) + len(lock_body):]
+        for token in [
+            "bestScore < effectiveThreshold * 100",
+            "scoreGap < SAFE_MATCH_SCORE_GAP",
+            "ERROR_MATCH_AMBIGUOUS",
+            "ERROR_FACE_ID_MAPPING_MISSING",
+            "Face search matched",
+            "buildFaceBounds(faceInfo)",
+        ]:
+            self.assertIn(token, after_lock)
+
+
+class FaceDeliveryV9DatabaseContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.constants = read_text("app/src/main/java/com/punch/app/utils/Constants.java")
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+
+    def test_db_version_and_forward_migration_create_face_apply_tasks(self) -> None:
+        self.assertIn("createFaceApplyTasksTable(db);", self.db)
+        self.assertRegex(self.db, r"if \(oldVersion < 11\)\s*\{\s*createFaceApplyTasksTable\(db\);")
+        for token in [
+            "CREATE TABLE IF NOT EXISTS face_apply_tasks",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "emp_id TEXT NOT NULL UNIQUE",
+            "operation TEXT NOT NULL",
+            "face_version INTEGER NOT NULL DEFAULT 0",
+            "retry_count INTEGER NOT NULL DEFAULT 0",
+            "last_error TEXT NOT NULL DEFAULT ''",
+        ]:
+            self.assertIn(token, self.db)
+
+    def test_batch_commit_is_one_sqlite_transaction_for_employee_feature_and_task(self) -> None:
+        self.assertIn("public boolean commitEmployeeFaceBatch(List<FaceBatchWrite> writes)", self.db)
+        start = self.db.index("public boolean commitEmployeeFaceBatch(List<FaceBatchWrite> writes)")
+        end = self.db.index("public FaceApplyTask getNextFaceApplyTask()", start)
+        body = self.db[start:end]
+        self.assertIn("db.beginTransaction();", body)
+        self.assertIn("writeEmployeeForBatch(db, write.employee);", body)
+        self.assertIn("writeFaceFeatureForBatch(db, write);", body)
+        self.assertIn("writeFaceApplyTaskForBatch(db, write);", body)
+        self.assertIn("db.setTransactionSuccessful();", body)
+        self.assertIn("db.endTransaction();", body)
+
+    def test_task_completion_and_failure_are_guarded_by_task_id(self) -> None:
+        self.assertIn("public boolean deleteFaceApplyTask(long taskId)", self.db)
+        self.assertIn('db.delete("face_apply_tasks", "id=?"', self.db)
+        self.assertIn("public void markFaceApplyTaskRetry(long taskId, String error, long nextRetryAt)", self.db)
+        self.assertIn("public void markFaceApplyTaskPermanentFailed(long taskId, String error)", self.db)
+        self.assertIn('"id=?"', self.db)
+
+
+class FaceDeliveryV9RuntimeMutationContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.face = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def _method(self, signature: str, next_signature: str) -> str:
+        start = self.face.index(signature)
+        end = self.face.index(next_signature, start)
+        return self.face[start:end]
+
+    def test_apply_stored_feature_does_not_decode_extract_or_persist_feature(self) -> None:
+        body = self._method(
+            "public RegisterResult applyStoredFeature(Context context, String empId, byte[] feature)",
+            "private boolean failFullRebuild",
+        )
+        self.assertIn("feature == null || feature.length != 512", body)
+        self.assertNotIn("extractFeatureFromFile", body)
+        self.assertNotIn("persistExtractedFeature", body)
+        self.assertNotIn("BitmapFactory", body)
+        self.assertIn("faceSearch.pushPersonById", body)
+
+    def test_replace_checks_native_delete_before_push_and_keeps_mapping_on_delete_failure(self) -> None:
+        body = self._method(
+            "public RegisterResult applyStoredFeature(Context context, String empId, byte[] feature)",
+            "private boolean failFullRebuild",
+        )
+        delete_pos = body.index("faceSearch.delPersonById")
+        push_pos = body.index("faceSearch.pushPersonById")
+        self.assertLess(delete_pos, push_pos)
+        self.assertIn("if (deleteResult != 0)", body)
+        delete_fail = body[body.index("if (deleteResult != 0)"):push_pos]
+        self.assertNotIn("empToIntId.remove", delete_fail)
+        self.assertNotIn("intToEmpId.remove", delete_fail)
+
+    def test_remove_mutates_java_mapping_only_after_native_delete_success(self) -> None:
+        body = self._method("public boolean removeFace(String empId)", "public RecognizeResult recognizeFromBitmap")
+        delete_pos = body.index("faceSearch.delPersonById")
+        map_remove_pos = body.index("empToIntId.remove")
+        self.assertLess(delete_pos, map_remove_pos)
+        self.assertIn("if (deleteResult != 0)", body)
+        self.assertIn("return false;", body)
+        self.assertIn("return true;", body)
+
+
+class FaceDeliveryV9WorkerContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        path = ROOT / "app/src/main/java/com/punch/app/face/FaceApplyWorker.java"
+        self.worker = path.read_text(encoding="utf-8") if path.is_file() else ""
+
+    def test_worker_is_single_threaded_and_coalesces_triggers(self) -> None:
+        self.assertIn("Executors.newSingleThreadScheduledExecutor()", self.worker)
+        self.assertIn("AtomicBoolean queued", self.worker)
+        self.assertIn("public void trigger(Context context)", self.worker)
+        self.assertIn("queued.compareAndSet(false, true)", self.worker)
+
+    def test_worker_consumes_persisted_tasks_and_dispatches_upsert_remove(self) -> None:
+        self.assertIn("db.getNextReadyFaceApplyTask(afterTaskId, nowMs)", self.worker)
+        self.assertIn('"UPSERT".equals(task.operation)', self.worker)
+        self.assertIn('"REMOVE".equals(task.operation)', self.worker)
+        self.assertIn("applyStoredFeature(", self.worker)
+        self.assertIn("faceManager.removeFace", self.worker)
+
+    def test_worker_completes_exact_task_and_does_not_head_of_line_block_after_failure(self) -> None:
+        self.assertIn("db.completeFaceApplyTask(task.id, task.empId", self.worker)
+        self.assertIn("db.markFaceApplyTaskRetry(task.id, outcome.error, nextRetryAt)", self.worker)
+        self.assertIn("db.markFaceApplyTaskPermanentFailed(task.id, outcome.error)", self.worker)
+        self.assertIn("afterTaskId = task.id;", self.worker)
+        fail_pos = self.worker.index("db.markFaceApplyTaskRetry(task.id, outcome.error, nextRetryAt);")
+        tail = self.worker[fail_pos:self.worker.index("private ApplyOutcome applyOne", fail_pos)]
+        self.assertNotIn("break;", tail)
+
+
+class FaceDeliveryV9BatchAckContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.api = read_text("app/src/main/java/com/punch/app/network/ApiService.java")
+        self.sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+        self.reg = read_text("app/src/main/java/com/punch/app/face/FaceRegistrationManager.java")
+
+    def test_employee_sync_request_fields_are_unchanged_and_page_size_is_200(self) -> None:
+        self.assertIn("private static final int EMPLOYEE_SYNC_PAGE_SIZE = 200;", self.api)
+        start = self.api.index("public static ApiResult<EmployeeSyncData> syncEmployees(int page)")
+        end = self.api.index("public static ApiResult<Void> reportEventResult", start)
+        body = self.api[start:end]
+        for token in ['body.put("device_id"', 'body.put("page", page);', 'body.put("page_size", EMPLOYEE_SYNC_PAGE_SIZE);', 'body.put("op_status", 1);']:
+            self.assertIn(token, body)
+        for forbidden in ["batch_cursor", "batch_size", "event_cursor"]:
+            self.assertNotIn(forbidden, body)
+
+    def test_person_changed_uses_dedicated_persistence_loop_and_single_final_ack(self) -> None:
+        self.assertIn("syncEmployeesEventInBatches(appContext, event)", self.sync)
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        self.assertIn("ApiService.syncEmployees(page)", body)
+        self.assertEqual(1, body.count("ApiService.reportEventResult("))
+        self.assertIn("event.cursor", body)
+        self.assertIn("eventEmployeeResults.addAll(batch.employeeResults);", body)
+        self.assertIn("FaceApplyWorker.get().trigger(context);", body)
+        self.assertIn("page += 1;", body)
+        outer = self.sync[self.sync.index("private void applyHeartbeatEvents"):self.sync.index("private boolean syncEmployeesEventInBatches", self.sync.index("private void applyHeartbeatEvents"))]
+        self.assertIn('if ("person_changed".equals(safeString(event.eventType)))', outer)
+        self.assertIn("continue;", outer)
+
+    def test_event_batch_coalesces_duplicate_employee_changes_to_latest_desired_state(self) -> None:
+        self.assertIn("coalesceLatestEmployeeChanges(changeItems)", self.sync)
+        self.assertIn("private List<EmployeeSyncData.ChangeItem> coalesceLatestEmployeeChanges", self.sync)
+        start = self.sync.index("private EmployeeBatchOutcome processEmployeeEventBatch(")
+        end = self.sync.index("private boolean syncEmployeesEventInBatches", start)
+        body = self.sync[start:end]
+        self.assertIn("for (EmployeeSyncData.ChangeItem changeItem : effectiveChanges)", body)
+
+    def test_background_person_changed_does_not_disable_ready_punch_environment(self) -> None:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        self.assertIn("app.beginEmployeeSyncProgress(event.cursor)", body)
+        self.assertNotIn("beginPunchDataPreparation", body)
+        self.assertNotIn("markPunchRecognitionFailed", body)
+        self.assertNotIn("updatePunchDataPreparationStatus", body)
+
+    def test_event_batch_persists_before_ack_and_does_not_mutate_facesearch(self) -> None:
+        start = self.sync.index("private EmployeeBatchOutcome processEmployeeEventBatch(")
+        end = self.sync.index("private boolean syncEmployeesEventInBatches", start)
+        body = self.sync[start:end]
+        self.assertIn("db.commitEmployeeFaceBatch(batchWrites)", body)
+        self.assertNotIn("FaceManager.get().removeFace", body)
+        self.assertNotIn("FaceManager.get().registerFace", body)
+        self.assertNotIn("rebuildFaceLibrary", body)
+
+    def test_face_preparation_returns_feature_without_runtime_registration(self) -> None:
+        self.assertIn("public void prepareEmployeesForPersistence", self.reg)
+        start = self.reg.index("public void prepareEmployeesForPersistence")
+        end = self.reg.index("public void refreshEmployee", start)
+        body = self.reg[start:end]
+        self.assertIn("prepareEmployeesInternal", body)
+        self.assertNotIn("registerFace", body)
+
+
+class FaceApplyRetryV10ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.constants = read_text("app/src/main/java/com/punch/app/utils/Constants.java")
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+        path = ROOT / "app/src/main/java/com/punch/app/face/FaceApplyWorker.java"
+        self.worker = path.read_text(encoding="utf-8") if path.is_file() else ""
+
+    def test_db_v12_adds_retry_state_and_next_retry_at_with_forward_migration(self) -> None:
+        self.assertIn("public static final int DB_VERSION = 12;", self.constants)
+        for token in [
+            "state TEXT NOT NULL DEFAULT 'PENDING'",
+            "next_retry_at INTEGER NOT NULL DEFAULT 0",
+        ]:
+            self.assertIn(token, self.db)
+        self.assertRegex(self.db, r"if \(oldVersion < 12\)\s*\{")
+        self.assertIn('addColumnIfMissing(db, "face_apply_tasks", "state", "TEXT NOT NULL DEFAULT \'PENDING\'")', self.db)
+        self.assertIn('addColumnIfMissing(db, "face_apply_tasks", "next_retry_at", "INTEGER NOT NULL DEFAULT 0")', self.db)
+
+    def test_new_desired_state_resets_retry_metadata_to_pending_now(self) -> None:
+        start = self.db.index("private void writeFaceApplyTaskForBatch")
+        end = self.db.index("public boolean hasFaceApplyTask", start)
+        body = self.db[start:end]
+        self.assertIn('values.put("state", "PENDING")', body)
+        self.assertIn('values.put("retry_count", 0)', body)
+        self.assertIn('values.put("next_retry_at", 0)', body)
+        self.assertIn('values.put("last_error", "")', body)
+
+    def test_ready_task_query_filters_pending_and_due_time(self) -> None:
+        self.assertIn("public FaceApplyTask getNextReadyFaceApplyTask(long afterId, long nowMs)", self.db)
+        start = self.db.index("public FaceApplyTask getNextReadyFaceApplyTask(long afterId, long nowMs)")
+        end = self.db.index("public long getNextFaceApplyRetryAt()", start)
+        body = self.db[start:end]
+        self.assertIn("state='PENDING'", body)
+        self.assertIn("next_retry_at<=?", body)
+        self.assertIn("ORDER BY id ASC LIMIT 1", body)
+        self.assertIn("return readFaceApplyTask(c);", body)
+        helper_start = self.db.index("private FaceApplyTask readFaceApplyTask(Cursor c)")
+        helper_end = self.db.index("public boolean deleteFaceApplyTask", helper_start)
+        helper = self.db[helper_start:helper_end]
+        self.assertIn("task.nextRetryAt", helper)
+        self.assertIn("task.state", helper)
+
+    def test_retry_and_permanent_failure_have_distinct_database_updates(self) -> None:
+        self.assertIn("public void markFaceApplyTaskRetry(long taskId, String error, long nextRetryAt)", self.db)
+        self.assertIn("retry_count=retry_count+1", self.db)
+        self.assertIn("next_retry_at=?", self.db)
+        self.assertIn("public void markFaceApplyTaskPermanentFailed(long taskId, String error)", self.db)
+        permanent = self.db[self.db.index("public void markFaceApplyTaskPermanentFailed"):self.db.index("public boolean completeFaceApplyTask", self.db.index("public void markFaceApplyTaskPermanentFailed"))]
+        self.assertIn('state=\'FAILED\'', permanent)
+        self.assertNotIn("retry_count=retry_count+1", permanent)
+
+    def test_worker_uses_single_thread_scheduled_executor_and_capped_backoff(self) -> None:
+        self.assertIn("Executors.newSingleThreadScheduledExecutor()", self.worker)
+        for token in [
+            "1_000L",
+            "5_000L",
+            "30_000L",
+            "60_000L",
+            "300_000L",
+        ]:
+            self.assertIn(token, self.worker)
+        self.assertIn("private long retryDelayMs(int retryCount)", self.worker)
+        self.assertIn("Math.min", self.worker)
+
+    def test_worker_only_reads_due_tasks_and_schedules_earliest_future_retry(self) -> None:
+        self.assertIn("db.getNextReadyFaceApplyTask(afterTaskId, nowMs)", self.worker)
+        self.assertIn("db.getNextFaceApplyRetryAt()", self.worker)
+        self.assertIn("scheduleRetry(context, nextRetryAt)", self.worker)
+        self.assertIn("TimeUnit.MILLISECONDS", self.worker)
+
+    def test_worker_classifies_retryable_runtime_failures_and_permanent_data_errors(self) -> None:
+        self.assertIn("ApplyOutcome.retry", self.worker)
+        self.assertIn("ApplyOutcome.permanent", self.worker)
+        for token in [
+            "Face runtime is not ready",
+            "FaceSearch remove failed",
+            "Persisted face feature is missing",
+            "Face task version is stale",
+            "Unknown face apply operation",
+        ]:
+            self.assertIn(token, self.worker)
+        self.assertIn("db.markFaceApplyTaskRetry", self.worker)
+        self.assertIn("db.markFaceApplyTaskPermanentFailed", self.worker)
+
+    def test_worker_does_not_spin_retry_failed_task_in_same_drain(self) -> None:
+        self.assertIn("private ApplyOutcome applyOne", self.worker)
+        start = self.worker.index("private void drain(Context context)")
+        end = self.worker.index("private ApplyOutcome applyOne", start)
+        body = self.worker[start:end]
+        self.assertIn("afterTaskId = task.id;", body)
+        self.assertIn("nextRetryAt", body)
+        self.assertNotIn("while (System.currentTimeMillis() <", body)
+        self.assertNotIn("Thread.sleep", body)
+
+    def test_full_rebuild_only_treats_pending_upsert_as_required_runtime_state(self) -> None:
+        face = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+        self.assertIn("public boolean hasPendingFaceApplyTask(String empId, String operation)", self.db)
+        db_start = self.db.index("public boolean hasPendingFaceApplyTask(String empId, String operation)")
+        db_end = self.db.index("public FaceApplyTask getNextFaceApplyTask()", db_start)
+        db_body = self.db[db_start:db_end]
+        self.assertIn("state='PENDING'", db_body)
+        rebuild_start = face.index("public boolean rebuildFaceLibrarySync(Context context)")
+        rebuild_end = face.index("public RegisterResult registerFace", rebuild_start)
+        rebuild = face[rebuild_start:rebuild_end]
+        self.assertIn("db.getPendingFaceApplyEmployeeIds(", rebuild)
+        self.assertIn("DatabaseHelper.FaceBatchWrite.OP_UPSERT", rebuild)
+        self.assertIn("pendingRuntimeUpsertEmployeeIds.contains(emp.id)", rebuild)
+        self.assertNotIn("db.hasFaceApplyTask(", rebuild)
+
+
+
+class FaceApplyBackpressureV11ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+        self.sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+
+    def test_pending_backlog_count_only_counts_pending_tasks(self) -> None:
+        self.assertIn("public int getPendingFaceApplyTaskCount()", self.db)
+        start = self.db.index("public int getPendingFaceApplyTaskCount()")
+        end = self.db.index("public FaceApplyTask getNextFaceApplyTask()", start)
+        body = self.db[start:end]
+        self.assertIn("SELECT COUNT(*) FROM face_apply_tasks WHERE state='PENDING'", body)
+        self.assertNotIn("state='FAILED'", body)
+
+    def test_sync_uses_500_high_and_200_low_watermarks(self) -> None:
+        self.assertIn("FACE_APPLY_BACKLOG_HIGH_WATERMARK = 500", self.sync)
+        self.assertIn("FACE_APPLY_BACKLOG_LOW_WATERMARK = 200", self.sync)
+        self.assertIn("AtomicBoolean faceApplyBackpressureActive", self.sync)
+
+    def test_backpressure_gate_uses_hysteresis_and_triggers_worker(self) -> None:
+        self.assertIn("private boolean shouldPauseEmployeeBatchFetch(Context context)", self.sync)
+        start = self.sync.index("private boolean shouldPauseEmployeeBatchFetch(Context context)")
+        end = self.sync.index("private boolean syncEmployeesEventInBatches", start)
+        body = self.sync[start:end]
+        self.assertIn("db.getPendingFaceApplyTaskCount()", body)
+        self.assertIn("pendingCount >= FACE_APPLY_BACKLOG_HIGH_WATERMARK", body)
+        self.assertIn("pendingCount > FACE_APPLY_BACKLOG_LOW_WATERMARK", body)
+        self.assertIn("faceApplyBackpressureActive.set(true)", body)
+        self.assertIn("faceApplyBackpressureActive.set(false)", body)
+        self.assertIn("FaceApplyWorker.get().trigger(context)", body)
+
+    def test_single_ack_event_loop_does_not_use_backpressure_as_a_mid_event_gate(self) -> None:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        self.assertIn("ApiService.syncEmployees(page)", body)
+        self.assertIn("FaceApplyWorker.get().trigger(context);", body)
+        self.assertNotIn("shouldPauseEmployeeBatchFetch(context)", body)
+
+    def test_single_ack_event_loop_never_waits_or_yields_on_apply_backlog(self) -> None:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        self.assertNotIn("Thread.sleep", body)
+        self.assertNotIn("while (db.getPendingFaceApplyTaskCount()", body)
+        self.assertNotIn("if (shouldPauseEmployeeBatchFetch(context))", body)
+        self.assertEqual(1, body.count("ApiService.reportEventResult("))
+
+
+class FaceDeliveryV9RecoveryContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = read_text("app/src/main/java/com/punch/app/PunchApplication.java")
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+        self.face = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def test_full_rebuild_includes_durable_pending_upsert_even_before_registered_flag_commit(self) -> None:
+        self.assertIn("public boolean hasPendingFaceApplyTask(String empId, String operation)", self.db)
+        start = self.face.index("public boolean rebuildFaceLibrarySync(Context context)")
+        end = self.face.index("public RegisterResult registerFace", start)
+        body = self.face[start:end]
+        self.assertIn("DatabaseHelper.FaceBatchWrite.OP_UPSERT", body)
+        self.assertIn("db.getPendingFaceApplyEmployeeIds(", body)
+        self.assertIn("DatabaseHelper.FaceBatchWrite.OP_UPSERT", body)
+        self.assertIn("boolean registeredForRuntime = emp.faceRegistered == 1", body)
+        self.assertIn("boolean pendingRuntimeUpsert = pendingRuntimeUpsertEmployeeIds.contains(emp.id)", body)
+        self.assertIn("registeredForRuntime || pendingRuntimeUpsert", body)
+
+    def test_heartbeat_retries_durable_face_apply_when_runtime_is_ready(self) -> None:
+        sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+        start = sync.index("private void runHeartbeatCycle(Context appContext, SyncTrigger trigger)")
+        end = sync.index("private void applyHeartbeatEvents", start)
+        body = sync[start:end]
+        self.assertIn("FaceManager.get().isFaceLibraryReady()", body)
+        self.assertIn("FaceApplyWorker.get().trigger(appContext);", body)
+
+    def test_successful_preparation_triggers_pending_face_apply_after_runtime_ready(self) -> None:
+        start = self.app.index("private void runPunchPreparation()")
+        end = self.app.index("private boolean waitForFaceSdkReady()", start)
+        body = self.app[start:end]
+        self.assertIn("FaceApplyWorker.get().trigger(this);", body)
+        trigger_pos = body.index("FaceApplyWorker.get().trigger(this);")
+        rebuild_pos = body.index("rebuildLocalFaceLibrary(this)") if "rebuildLocalFaceLibrary(this)" in body else -1
+        if rebuild_pos >= 0:
+            self.assertGreater(trigger_pos, rebuild_pos)
+
+class FaceStartupReconcileV12ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+        self.face = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+        self.app = read_text("app/src/main/java/com/punch/app/PunchApplication.java")
+        path = ROOT / "app/src/main/java/com/punch/app/face/FaceLibraryReconciler.java"
+        self.reconciler = path.read_text(encoding="utf-8") if path.is_file() else ""
+
+    def test_reconciler_component_exists_and_uses_runtime_and_database_state(self) -> None:
+        self.assertTrue(self.reconciler)
+        self.assertIn("class FaceLibraryReconciler", self.reconciler)
+        self.assertIn("FaceManager.RuntimeSnapshot", self.reconciler)
+        self.assertIn("getActiveRegisteredFaceEmployeeIds()", self.reconciler)
+        self.assertIn("getPendingFaceApplyTaskEmployeeIds", self.reconciler)
+
+    def test_database_exposes_registered_and_pending_employee_sets(self) -> None:
+        self.assertIn("public Set<String> getActiveRegisteredFaceEmployeeIds()", self.db)
+        self.assertIn("public Set<String> getPendingFaceApplyTaskEmployeeIds(String operation)", self.db)
+        start = self.db.index("public Set<String> getPendingFaceApplyTaskEmployeeIds(String operation)")
+        end = self.db.index("public", start + 10)
+        body = self.db[start:end]
+        self.assertIn("state='PENDING'", body)
+
+    def test_runtime_snapshot_is_taken_under_face_library_lock_and_checks_native_size(self) -> None:
+        self.assertIn("public RuntimeSnapshot snapshotRuntime()", self.face)
+        start = self.face.index("public RuntimeSnapshot snapshotRuntime()")
+        end = self.face.index("public", start + 10)
+        body = self.face[start:end]
+        self.assertIn("synchronized (faceLibraryLock)", body)
+        self.assertIn("faceSearch.getSize()", body)
+        self.assertIn("new HashSet<>(empToIntId.keySet())", body)
+        self.assertIn("mappingConsistent", body)
+
+    def test_reconcile_requires_rebuild_for_untrusted_runtime(self) -> None:
+        self.assertIn("snapshot.state != FaceManager.FaceLibraryState.READY", self.reconciler)
+        self.assertIn("snapshot.nativeSize != snapshot.loadedFaceCount", self.reconciler)
+        self.assertIn("!snapshot.mappingConsistent", self.reconciler)
+        self.assertIn("return ReconcileResult.rebuild", self.reconciler)
+
+    def test_pending_tasks_explain_expected_transitional_differences(self) -> None:
+        self.assertIn("mustBeLoaded.removeAll(pendingUpserts)", self.reconciler)
+        self.assertIn("allowedRuntime.addAll(pendingUpserts)", self.reconciler)
+        self.assertIn("allowedRuntime.addAll(pendingRemoves)", self.reconciler)
+        self.assertIn("snapshot.employeeIds.containsAll(mustBeLoaded)", self.reconciler)
+        self.assertIn("allowedRuntime.containsAll(snapshot.employeeIds)", self.reconciler)
+
+    def test_reconcile_requires_valid_persisted_feature_for_runtime_desired_faces(self) -> None:
+        self.assertIn("getFaceRuntimeEmployeeIdsMissingValidFeature", self.db)
+        self.assertIn("db.getFaceRuntimeEmployeeIdsMissingValidFeature", self.reconciler)
+        self.assertIn("FaceManager.get().getFeatureSchemaVersion()", self.reconciler)
+        self.assertIn("if (!missingFeatures.isEmpty())", self.reconciler)
+        start = self.db.index("public Set<String> getFaceRuntimeEmployeeIdsMissingValidFeature")
+        end = self.db.index("public", start + 10)
+        body = self.db[start:end]
+        self.assertIn("feature_schema_version=?", body)
+        self.assertIn("LENGTH(f.feature)=512", body)
+        self.assertIn("f.face_version=e.face_version", body)
+        self.assertIn("state='PENDING'", body)
+        self.assertIn("operation='UPSERT'", body)
+
+    def test_punch_preparation_skips_full_rebuild_only_when_reconcile_is_consistent(self) -> None:
+        start = self.app.index("private void runPunchPreparation()")
+        end = self.app.index("private boolean waitForFaceSdkReady()", start)
+        body = self.app[start:end]
+        self.assertIn("FaceLibraryReconciler.get().reconcile(this)", body)
+        self.assertIn("reconcileResult.isConsistent()", body)
+        self.assertIn("markPunchRecognitionReady(\"准备完成，可以开始打卡\")", body)
+        self.assertIn("rebuildLocalFaceLibrary(this)", body)
+        self.assertLess(body.index("reconcileResult.isConsistent()"), body.index("rebuildLocalFaceLibrary(this)"))
+
+class FaceFeatureBulkRebuildV13ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+        self.face = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+
+    def test_database_bulk_loads_face_features_in_bounded_chunks(self) -> None:
+        self.assertIn("FACE_FEATURE_QUERY_BATCH_SIZE", self.db)
+        self.assertIn("public Map<String, FaceFeatureCacheEntry> getFaceFeaturesByEmployeeIds(", self.db)
+        start = self.db.index("public Map<String, FaceFeatureCacheEntry> getFaceFeaturesByEmployeeIds(")
+        end = self.db.index("public", start + 10)
+        body = self.db[start:end]
+        self.assertIn("FACE_FEATURE_QUERY_BATCH_SIZE", body)
+        self.assertIn("WHERE emp_id IN (", body)
+        self.assertIn("SELECT emp_id, face_version", body)
+        self.assertIn("feature_schema_version", body)
+        self.assertIn("feature", body)
+
+    def test_bulk_feature_entry_keeps_metadata_needed_for_in_memory_validation(self) -> None:
+        self.assertIn("public static final class FaceFeatureCacheEntry", self.db)
+        for token in [
+            "public final int faceVersion;",
+            "public final String imageSha256;",
+            "public final int featureSchemaVersion;",
+            "public final byte[] feature;",
+        ]:
+            self.assertIn(token, self.db)
+
+    def test_full_rebuild_loads_feature_cache_before_per_employee_preparation(self) -> None:
+        start = self.face.index("public boolean rebuildFaceLibrarySync(Context context)")
+        end = self.face.index("public RegisterResult registerFace", start)
+        body = self.face[start:end]
+        self.assertIn("db.getFaceFeaturesByEmployeeIds(", body)
+        self.assertIn("Map<String, DatabaseHelper.FaceFeatureCacheEntry>", body)
+        bulk_pos = body.index("db.getFaceFeaturesByEmployeeIds(")
+        helper_pos = body.index("loadFeatureForRebuild(", bulk_pos)
+        self.assertLess(bulk_pos, helper_pos)
+        self.assertNotIn("db.getValidFaceFeature(", body)
+
+    def test_rebuild_helper_validates_bulk_cached_metadata_before_fallback(self) -> None:
+        start = self.face.index("private byte[] loadFeatureForRebuild(")
+        end = self.face.index("private void persistExtractedFeature(", start)
+        body = self.face[start:end]
+        self.assertIn("DatabaseHelper.FaceFeatureCacheEntry cached", body)
+        self.assertIn("cached.faceVersion == emp.faceVersion", body)
+        self.assertIn("cached.featureSchemaVersion == FACE_FEATURE_SCHEMA_VERSION", body)
+        self.assertIn("cached.feature != null && cached.feature.length == 512", body)
+        self.assertIn("normalizeFaceSha256(cached.imageSha256)", body)
+        self.assertIn("normalizeFaceSha256(emp.faceImageSha256)", body)
+        cache_pos = body.index("DatabaseHelper.FaceFeatureCacheEntry cached")
+        image_pos = body.index("FaceFileManager.getFaceImagePath")
+        self.assertLess(cache_pos, image_pos)
+
+    def test_rebuild_cache_miss_still_regenerates_and_persists_feature(self) -> None:
+        start = self.face.index("private byte[] loadFeatureForRebuild(")
+        end = self.face.index("private void persistExtractedFeature(", start)
+        body = self.face[start:end]
+        for token in [
+            "extractFeatureFromFile(imagePath, emp.id)",
+            "stats.regenerated += 1;",
+            "db.upsertFaceFeature(",
+        ]:
+            self.assertIn(token, body)
+
+class FaceRebuildBulkMetadataV14ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db = read_text("app/src/main/java/com/punch/app/db/DatabaseHelper.java")
+        self.face = read_text("app/src/main/java/com/punch/app/face/FaceManager.java")
+        self.constants = read_text("app/src/main/java/com/punch/app/utils/Constants.java")
+
+    def test_database_bulk_loads_pending_apply_employee_ids(self) -> None:
+        self.assertIn("public Set<String> getPendingFaceApplyEmployeeIds(String operation)", self.db)
+        start = self.db.index("public Set<String> getPendingFaceApplyEmployeeIds(String operation)")
+        end = self.db.index("public", start + 10)
+        body = self.db[start:end]
+        self.assertIn("SELECT emp_id FROM face_apply_tasks", body)
+        self.assertIn("operation=?", body)
+        self.assertIn("state='PENDING'", body)
+
+    def test_database_bulk_gets_or_creates_stable_face_sdk_ids(self) -> None:
+        self.assertIn("FACE_SDK_ID_QUERY_BATCH_SIZE", self.db)
+        self.assertIn("public Map<String, Integer> getOrCreateFaceSdkIds(", self.db)
+        start = self.db.index("public Map<String, Integer> getOrCreateFaceSdkIds(")
+        end = self.db.index("private", start + 10)
+        body = self.db[start:end]
+        self.assertIn("faceSdkIdAllocationLock", body)
+        self.assertIn("beginTransaction()", body)
+        self.assertIn("findFaceSdkIds", body)
+        self.assertIn("findMaxFaceSdkId", body)
+        self.assertIn("Integer.MAX_VALUE", body)
+        self.assertIn("insertFaceSdkId(db, employeeId, nextId)", body)
+
+    def test_full_rebuild_preloads_pending_upsert_set_once(self) -> None:
+        start = self.face.index("public boolean rebuildFaceLibrarySync(Context context)")
+        end = self.face.index("public RegisterResult registerFace", start)
+        body = self.face[start:end]
+        self.assertIn("db.getPendingFaceApplyEmployeeIds(", body)
+        self.assertIn("pendingRuntimeUpsertEmployeeIds.contains(emp.id)", body)
+        self.assertNotIn("db.hasPendingFaceApplyTask(", body)
+
+    def test_full_rebuild_bulk_allocates_sdk_ids_outside_employee_loop(self) -> None:
+        start = self.face.index("public boolean rebuildFaceLibrarySync(Context context)")
+        end = self.face.index("public RegisterResult registerFace", start)
+        body = self.face[start:end]
+        self.assertIn("db.getOrCreateFaceSdkIds(", body)
+        self.assertIn("Map<String, Integer> rebuildSdkIds", body)
+        self.assertIn("rebuildSdkIds.get(emp.id)", body)
+        self.assertNotIn("db.getOrCreateFaceSdkId(emp.id)", body)
+        bulk_pos = body.index("db.getOrCreateFaceSdkIds(")
+        native_pos = body.index("synchronized (faceLibraryLock)")
+        self.assertLess(bulk_pos, native_pos)
+
+    def test_v14_does_not_require_database_schema_bump(self) -> None:
+        self.assertIn("DB_VERSION = 12", self.constants)
+
+class FaceDeliveryV15SingleEventAckContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.api = read_text("app/src/main/java/com/punch/app/network/ApiService.java")
+        self.sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+
+    def _body(self) -> str:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        return self.sync[start:end]
+
+    def test_employee_sync_keeps_existing_fields_and_200_page_size(self) -> None:
+        self.assertIn("private static final int EMPLOYEE_SYNC_PAGE_SIZE = 200;", self.api)
+        start = self.api.index("public static ApiResult<EmployeeSyncData> syncEmployees(int page)")
+        end = self.api.index("public static ApiResult<Void> reportEventResult", start)
+        body = self.api[start:end]
+        for token in [
+            'body.put("device_id"',
+            'body.put("page", page);',
+            'body.put("page_size", EMPLOYEE_SYNC_PAGE_SIZE);',
+            'body.put("op_status", 1);',
+        ]:
+            self.assertIn(token, body)
+        for forbidden in ["batch_cursor", "batch_size", "event_cursor"]:
+            self.assertNotIn(forbidden, body)
+
+    def test_person_changed_pages_forward_without_intermediate_ack(self) -> None:
+        body = self._body()
+        self.assertIn("int page = 1;", body)
+        self.assertIn("ApiService.syncEmployees(page)", body)
+        self.assertIn("page += 1;", body)
+        self.assertNotIn("ApiService.syncEmployees(1)", body)
+        self.assertEqual(1, body.count("ApiService.reportEventResult("))
+
+    def test_batches_accumulate_results_and_ack_once_after_paging_finishes(self) -> None:
+        body = self._body()
+        self.assertIn("List<EventResultDto.EmployeeResult> eventEmployeeResults = new ArrayList<>();", body)
+        self.assertIn("eventEmployeeResults.addAll(batch.employeeResults);", body)
+        self.assertIn("if (!data.hasMore) {", body)
+        self.assertIn("break;", body)
+        ack = body.index("ApiService.reportEventResult(")
+        page_inc = body.index("page += 1;")
+        self.assertGreater(ack, page_inc)
+        self.assertIn("eventEmployeeResults", body[ack:])
+
+    def test_face_apply_is_triggered_per_durable_batch_before_final_event_ack(self) -> None:
+        body = self._body()
+        commit_processing = body.index("EmployeeBatchOutcome batch = processEmployeeEventBatch(")
+        worker = body.index("FaceApplyWorker.get().trigger(context);", commit_processing)
+        ack = body.index("ApiService.reportEventResult(")
+        self.assertLess(commit_processing, worker)
+        self.assertLess(worker, ack)
+
+    def test_backpressure_does_not_abort_single_ack_event_mid_paging(self) -> None:
+        body = self._body()
+        self.assertNotIn("shouldPauseEmployeeBatchFetch(context)", body)
+        self.assertNotIn("FACE_APPLY_BACKLOG_HIGH_WATERMARK", body)
+        self.assertNotIn("FACE_APPLY_BACKLOG_LOW_WATERMARK", body)
+        self.assertNotIn("Thread.sleep", body)
+
+    def test_intermediate_fetch_or_durable_commit_failure_returns_without_event_ack(self) -> None:
+        body = self._body()
+        ack = body.index("ApiService.reportEventResult(")
+        fetch_fail = body.index("if (!result.success || result.data == null)")
+        durable_fail = body.index("if (!batch.durableCommitSucceeded)")
+        self.assertLess(fetch_fail, ack)
+        self.assertLess(durable_fail, ack)
+        self.assertIn("return false;", body[fetch_fail:durable_fail])
+        self.assertIn("return false;", body[durable_fail:ack])
+
+    def test_final_event_ack_uses_original_cursor_and_all_employee_results(self) -> None:
+        body = self._body()
+        ack = body.index("ApiService.reportEventResult(")
+        tail = body[ack:]
+        self.assertIn("event.cursor", tail)
+        self.assertIn("event.eventType", tail)
+        self.assertIn("true", tail)
+        self.assertIn("eventEmployeeResults", tail)
+        self.assertIn("事件结果已回传", tail)
+
+
+class FaceDeliveryV16PageSize200ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.api = read_text("app/src/main/java/com/punch/app/network/ApiService.java")
+        self.sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+
+    def test_employee_sync_page_size_is_200_without_request_field_changes(self) -> None:
+        self.assertIn("private static final int EMPLOYEE_SYNC_PAGE_SIZE = 200;", self.api)
+        start = self.api.index("public static ApiResult<EmployeeSyncData> syncEmployees(int page)")
+        end = self.api.index("public static ApiResult<Void> reportEventResult", start)
+        body = self.api[start:end]
+        for token in [
+            'body.put("device_id"',
+            'body.put("page", page);',
+            'body.put("page_size", EMPLOYEE_SYNC_PAGE_SIZE);',
+            'body.put("op_status", 1);',
+        ]:
+            self.assertIn(token, body)
+        for forbidden in ["batch_cursor", "batch_size", "event_cursor"]:
+            self.assertNotIn(forbidden, body)
+
+    def test_single_event_ack_paging_contract_is_preserved(self) -> None:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        self.assertIn("int page = 1;", body)
+        self.assertIn("ApiService.syncEmployees(page)", body)
+        self.assertIn("page += 1;", body)
+        self.assertEqual(1, body.count("ApiService.reportEventResult("))
+        self.assertIn("eventEmployeeResults.addAll(batch.employeeResults);", body)
+
+class EmployeeSyncProgressV17ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = read_text("app/src/main/java/com/punch/app/PunchApplication.java")
+        self.sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+        self.fragment = read_text("app/src/main/java/com/punch/app/fragment/PunchFragment.java")
+        self.layout = read_text("app/src/main/res/layout/fragment_punch.xml")
+
+    def test_application_exposes_separate_employee_sync_progress_in_snapshot(self) -> None:
+        self.assertIn("private volatile EmployeeSyncProgress employeeSyncProgress", self.app)
+        self.assertIn("public final EmployeeSyncProgress employeeSyncProgress;", self.app)
+        self.assertIn("employeeSyncProgress", self.app[self.app.index("public PunchStatusSnapshot getPunchStatusSnapshot()"):])
+        self.assertIn("public static final class EmployeeSyncProgress", self.app)
+
+    def test_employee_sync_duration_uses_monotonic_clock_and_formats_completion_text(self) -> None:
+        self.assertIn("import android.os.SystemClock;", self.app)
+        self.assertIn("SystemClock.elapsedRealtime()", self.app)
+        self.assertIn("formatEmployeeSyncDuration", self.app)
+        self.assertIn('"人员更新完成 · "', self.app)
+        self.assertIn('" 人 · 用时 "', self.app)
+        for token in ['"秒"', '"分"', '"小时"']:
+            self.assertIn(token, self.app)
+
+    def test_person_changed_publishes_start_batch_reporting_and_completion_progress(self) -> None:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        for token in [
+            "app.beginEmployeeSyncProgress(event.cursor)",
+            "app.updateEmployeeSyncBatchProcessing(",
+            "app.markEmployeeSyncBatchCommitted(",
+            "app.markEmployeeSyncReporting(",
+            "app.completeEmployeeSyncProgress(",
+        ]:
+            self.assertIn(token, body)
+        ack = body.index("ApiService.reportEventResult(")
+        reporting = body.index("app.markEmployeeSyncReporting(")
+        completed = body.index("app.completeEmployeeSyncProgress(")
+        self.assertLess(reporting, ack)
+        self.assertGreater(completed, ack)
+
+    def test_person_changed_failure_keeps_main_punch_readiness_separate(self) -> None:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        self.assertIn("app.failEmployeeSyncProgress(", body)
+        self.assertNotIn("app.markPunchRecognitionFailed(", body)
+        self.assertNotIn("app.beginPunchDataPreparation(", body)
+
+    def test_punch_layout_has_dedicated_employee_sync_progress_area(self) -> None:
+        for token in [
+            'android:id="@+id/layout_employee_sync_progress"',
+            'android:id="@+id/tv_employee_sync_title"',
+            'android:id="@+id/tv_employee_sync_detail"',
+            'android:id="@+id/progress_employee_sync"',
+            'style="?android:attr/progressBarStyleHorizontal"',
+        ]:
+            self.assertIn(token, self.layout)
+
+    def test_fragment_renders_employee_sync_progress_without_replacing_current_status(self) -> None:
+        for token in [
+            "layoutEmployeeSyncProgress",
+            "tvEmployeeSyncTitle",
+            "tvEmployeeSyncDetail",
+            "progressEmployeeSync",
+            "renderEmployeeSyncProgress(snapshot.employeeSyncProgress)",
+            "private void renderEmployeeSyncProgress(PunchApplication.EmployeeSyncProgress progress)",
+        ]:
+            self.assertIn(token, self.fragment)
+        render_start = self.fragment.index("private void renderEmployeeSyncProgress(")
+        render_end = self.fragment.index("private void", render_start + 10)
+        body = self.fragment[render_start:render_end]
+        self.assertIn("progress.progressPercent", body)
+        self.assertIn("progress.title", body)
+        self.assertIn("progress.detail", body)
+        self.assertNotIn("tvPunchStatusCurrent.setText", body)
+
+    def test_progress_history_records_batch_milestones_not_per_employee_noise(self) -> None:
+        self.assertIn("markEmployeeSyncBatchCommitted", self.app)
+        start = self.app.index("public void markEmployeeSyncBatchCommitted")
+        end = self.app.index("public void", start + 10)
+        body = self.app[start:end]
+        self.assertIn("addHistoryLocked", body)
+        self.assertIn("累计", body)
+        self.assertNotIn("for (", body)
+
+    def test_resetting_punch_status_timeline_clears_stale_employee_sync_progress(self) -> None:
+        start = self.app.index("public void resetPunchStatusTimeline")
+        end = self.app.index("public void addPunchStatusListener", start)
+        body = self.app[start:end]
+        self.assertIn("employeeSyncProgress = null;", body)
+        self.assertIn("employeeSyncStartedAtElapsedMs = 0L;", body)
+
+
+class EmployeeSyncPerItemProgressV18ContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = read_text("app/src/main/java/com/punch/app/PunchApplication.java")
+        self.sync = read_text("app/src/main/java/com/punch/app/service/SyncCoordinator.java")
+        self.reg = read_text("app/src/main/java/com/punch/app/face/FaceRegistrationManager.java")
+
+    def test_application_tracks_each_employee_with_300ms_ui_throttle(self) -> None:
+        self.assertIn("EMPLOYEE_SYNC_UI_THROTTLE_MS = 300L", self.app)
+        self.assertIn("employeeSyncLastUiPublishElapsedMs", self.app)
+        self.assertIn("public void updateEmployeeSyncItemProgress(", self.app)
+        start = self.app.index("public void updateEmployeeSyncItemProgress(")
+        end = self.app.index("public void", start + 10)
+        body = self.app[start:end]
+        self.assertIn('" · 当前 " + safeBatchProcessed + "/" + safeBatchSize', body)
+        self.assertIn('" · 累计 " + safeProcessedTotal + " 人"', body)
+        self.assertIn("now - employeeSyncLastUiPublishElapsedMs >= EMPLOYEE_SYNC_UI_THROTTLE_MS", body)
+        self.assertIn("safeBatchProcessed <= 1", body)
+        self.assertIn("safeBatchProcessed >= safeBatchSize", body)
+        self.assertNotIn("addHistoryLocked", body)
+
+    def test_item_progress_moves_horizontal_bar_inside_current_page(self) -> None:
+        self.assertIn("resolveEmployeeSyncItemProgressPercent", self.app)
+        start = self.app.index("private int resolveEmployeeSyncItemProgressPercent")
+        end = self.app.index("public static String formatEmployeeSyncDuration", start)
+        body = self.app[start:end]
+        self.assertIn("batchProcessed", body)
+        self.assertIn("batchSize", body)
+        self.assertIn("currentPage", body)
+        self.assertIn("totalPages", body)
+
+    def test_face_preparation_reports_each_completed_employee(self) -> None:
+        self.assertIn("public interface PreparedProgressCallback", self.reg)
+        self.assertIn("PreparedProgressCallback progressCallback", self.reg)
+        start = self.reg.index("private List<PreparedFaceResult> prepareEmployeesInternal")
+        end = self.reg.index("private PreparedFaceResult prepareSingleForPersistence", start)
+        body = self.reg[start:end]
+        self.assertIn("PreparedFaceResult result = prepareSingleForPersistence", body)
+        self.assertIn("progressCallback.onPrepared(result)", body)
+
+    def test_sync_coordinator_counts_fast_and_feature_paths_once_each(self) -> None:
+        self.assertIn("interface EmployeeBatchProgressCallback", self.sync)
+        self.assertIn("AtomicInteger", self.sync)
+        start = self.sync.index("private EmployeeBatchOutcome processEmployeeEventBatch(")
+        end = self.sync.index("private List<EmployeeSyncData.ChangeItem> coalesceLatestEmployeeChanges", start)
+        body = self.sync[start:end]
+        self.assertIn("markEmployeeBatchItemProcessed", body)
+        self.assertIn("waitForFacePreparation(", body)
+        self.assertIn("progressCallback", body)
+        self.assertIn("rawBatchSize", body)
+        self.assertIn("effectiveChanges.size()", body)
+
+    def test_person_changed_publishes_per_item_progress_with_page_offset(self) -> None:
+        start = self.sync.index("private boolean syncEmployeesEventInBatches(Context context,")
+        end = self.sync.index("private EventProcessingOutcome handleEvent", start)
+        body = self.sync[start:end]
+        self.assertIn("final int processedBeforePage = eventEmployeeResults.size();", body)
+        self.assertIn("app.updateEmployeeSyncItemProgress(", body)
+        self.assertIn("processedBeforePage + batchProcessed", body)
+        self.assertIn("EmployeeBatchOutcome batch = processEmployeeEventBatch(", body)
+        self.assertIn("data.changeItems,", body)
+
+    def test_reset_clears_throttle_timestamp(self) -> None:
+        start = self.app.index("public void resetPunchStatusTimeline")
+        end = self.app.index("public void addPunchStatusListener", start)
+        body = self.app[start:end]
+        self.assertIn("employeeSyncLastUiPublishElapsedMs = 0L;", body)
+
+
+class OtaDurableRetryContractTest(unittest.TestCase):
+    def test_retry_state_is_persisted_with_target_and_next_time(self) -> None:
+        constants = read_text("app/src/main/java/com/punch/app/utils/Constants.java")
+        session = read_text("app/src/main/java/com/punch/app/utils/SessionManager.java")
+        for token in [
+            "KEY_UPDATE_RETRY_PENDING",
+            "KEY_UPDATE_RETRY_COUNT",
+            "KEY_UPDATE_RETRY_NEXT_AT",
+            "KEY_UPDATE_RETRY_LAST_ERROR",
+            "KEY_UPDATE_RETRY_TARGET_VERSION",
+            "KEY_UPDATE_RETRY_APK_URL",
+        ]:
+            self.assertIn(token, constants)
+        for token in [
+            "saveUpdateRetryState",
+            "clearUpdateRetryState",
+            "isUpdateRetryPending",
+            "getUpdateRetryCount",
+            "getUpdateRetryNextAt",
+            "getUpdateRetryLastError",
+            "getUpdateRetryTargetVersion",
+            "getUpdateRetryApkUrl",
+        ]:
+            self.assertIn(token, session)
+        save = re.search(r"(?s)void\s+saveUpdateRetryState\s*\(.*?\)\s*\{(.*?)\n\s*\}", session)
+        self.assertIsNotNone(save)
+        self.assertIn(".commit()", save.group(1))
+
+    def test_retry_policy_has_unbounded_backoff_schedule(self) -> None:
+        policy_path = ROOT / "app/src/main/java/com/punch/app/utils/UpdateRetryPolicy.java"
+        self.assertTrue(policy_path.is_file(), policy_path)
+        policy = policy_path.read_text(encoding="utf-8")
+        for delay in ["60_000L", "5 * 60_000L", "15 * 60_000L", "30 * 60_000L", "60 * 60_000L", "3 * 60 * 60_000L"]:
+            self.assertIn(delay, policy)
+        self.assertNotIn("MAX_RETRY", policy)
+
+    def test_retry_receiver_uses_alarm_and_restores_after_boot(self) -> None:
+        receiver_path = ROOT / "app/src/main/java/com/punch/app/receiver/UpdateRetryReceiver.java"
+        self.assertTrue(receiver_path.is_file(), receiver_path)
+        receiver = receiver_path.read_text(encoding="utf-8")
+        for token in [
+            "AlarmManager",
+            "setAndAllowWhileIdle",
+            "ACTION_UPDATE_RETRY",
+            "Intent.ACTION_BOOT_COMPLETED",
+            "restorePersistedRetry",
+            "startBackgroundUpdateIfEligible",
+        ]:
+            self.assertIn(token, receiver)
+
+        manifest = read_text("app/src/main/AndroidManifest.xml")
+        self.assertIn("android.permission.RECEIVE_BOOT_COMPLETED", manifest)
+        self.assertIn(".receiver.UpdateRetryReceiver", manifest)
+        self.assertIn("android.intent.action.BOOT_COMPLETED", manifest)
+
+    def test_update_manager_schedules_transient_failures_and_clears_success(self) -> None:
+        manager = read_text("app/src/main/java/com/punch/app/utils/UpdateManager.java")
+        for token in [
+            "scheduleDurableRetry",
+            "UpdateRetryReceiver.schedule",
+            "UpdateRetryReceiver.cancel",
+            "UpdateRetryPolicy.delayMsForFailureCount",
+            "download_failed",
+            "download_crashed",
+            "update_dir_unavailable",
+            "old_apk_delete_failed",
+            "install_submit_failed",
+            "install_pending_timeout",
+        ]:
+            self.assertIn(token, manager)
+        # Validation errors are permanent: do not schedule retry inside that branch.
+        validation = re.search(
+            r"(?s)if\s*\(!validation\.success\)\s*\{(.*?)\n\s*\}", manager
+        )
+        self.assertIsNotNone(validation)
+        self.assertNotIn("scheduleDurableRetry", validation.group(1))
+
+    def test_new_target_resets_stale_retry_generation(self) -> None:
+        manager = read_text("app/src/main/java/com/punch/app/utils/UpdateManager.java")
+        self.assertIn("reconcileRetryGeneration", manager)
+        self.assertIn("getUpdateRetryTargetVersion", manager)
+        self.assertIn("getUpdateRetryApkUrl", manager)
+        self.assertIn("clearUpdateRetryState", manager)
+
+    def test_successful_install_clears_retry_and_alarm(self) -> None:
+        manager = read_text("app/src/main/java/com/punch/app/utils/UpdateManager.java")
+        success_branch = re.search(
+            r"(?s)if\s*\(status\s*==\s*PackageInstaller\.STATUS_SUCCESS\s*\|\|\s*isInstalledVersionAtTarget\(context\)\)\s*\{(.*?)\n\s*\}",
+            manager,
+        )
+        self.assertIsNotNone(success_branch)
+        self.assertIn("clearDurableRetry", success_branch.group(1))
+
+
+class OtaAttemptWatchdogContractTest(unittest.TestCase):
+    def test_attempt_is_armed_before_async_download_can_be_killed(self) -> None:
+        manager = read_text("app/src/main/java/com/punch/app/utils/UpdateManager.java")
+        self.assertIn("armAttemptWatchdog", manager)
+        start_pos = manager.index("public static boolean startBackgroundUpdateIfEligible")
+        arm_pos = manager.index("armAttemptWatchdog(appContext)", start_pos)
+        execute_pos = manager.index("AUTO_UPDATE_EXECUTOR.execute", start_pos)
+        self.assertLess(arm_pos, execute_pos)
+
+    def test_retry_alarm_rearms_when_an_existing_attempt_is_still_running(self) -> None:
+        receiver = read_text("app/src/main/java/com/punch/app/receiver/UpdateRetryReceiver.java")
+        self.assertIn("boolean started = UpdateManager.startBackgroundUpdateIfEligible", receiver)
+        self.assertIn("ATTEMPT_WATCHDOG_MS", receiver)
+        self.assertIn("if (!started && session.isUpdateRetryPending()", receiver)

@@ -187,3 +187,7 @@ adb install -r D:\code\faceapk\app\release\app-release.apk && adb shell dpm set-
 
 adb install -r -t app-debug.apk&&adb shell dpm remove-active-admin com.punch.app/.receiver.KioskDeviceAdminReceiver
 &&adb uninstall com.punch.app
+
+
+卸载后重装后重新授权命令：
+adb install -r app-release.apk && adb shell dpm set-device-owner com.punch.app/.receiver.KioskDeviceAdminReceiver && adb shell pm grant com.punch.app android.permission.WRITE_SECURE_SETTINGS

@@ -43,11 +43,7 @@ public class SyncService extends Service {
         }
         SyncTrigger safeTrigger = trigger != null ? trigger : SyncTrigger.AFTER_PUNCH;
         Context appContext = context.getApplicationContext();
-        HeartbeatManager.get(appContext).start();
-        Intent intent = new Intent(appContext, SyncService.class);
-        intent.setAction(ACTION_SYNC_NOW);
-        intent.putExtra(EXTRA_SYNC_TRIGGER, safeTrigger.name());
-        appContext.startService(intent);
+        HeartbeatManager.get(appContext).triggerNow(safeTrigger);
     }
 
     private static SyncTrigger parseTrigger(String value) {
