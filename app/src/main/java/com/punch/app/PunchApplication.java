@@ -20,6 +20,7 @@ import com.punch.app.service.HeartbeatManager;
 import com.punch.app.service.SyncCoordinator;
 import com.punch.app.utils.AppLogger;
 import com.punch.app.utils.KioskManager;
+import com.punch.app.utils.PlatformPermissionBootstrap;
 import com.punch.app.utils.SessionManager;
 import com.punch.app.utils.UpdateManager;
 import com.punch.app.receiver.UpdateRetryReceiver;
@@ -97,6 +98,8 @@ public class PunchApplication extends Application {
             SessionManager.get().init(this);
             return;
         }
+
+        PlatformPermissionBootstrap.prepareWifiScanAccess(this);
 
         registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
             @Override
