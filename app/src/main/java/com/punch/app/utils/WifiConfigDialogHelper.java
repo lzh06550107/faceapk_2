@@ -63,7 +63,7 @@ public final class WifiConfigDialogHelper {
         content.setPadding(padding, padding, padding, 0);
 
         TextView hint = new TextView(context);
-        hint.setText("可搜索附近 Wi-Fi，也可手动输入 SSID。搜索需要定位权限且系统定位已开启；连接配置仍要求当前应用是 Device Owner。");
+        hint.setText("可搜索附近 Wi-Fi，也可手动输入 SSID。搜索需要定位权限且系统定位已开启；连接配置要求当前应用具备 Android 12 System App 或 Device Owner 管理能力。");
         hint.setTextColor(ContextCompat.getColor(context, R.color.text_secondary));
         hint.setTextSize(12f);
         content.addView(hint, new LinearLayout.LayoutParams(
