@@ -193,7 +193,7 @@ public final class SystemAppController {
         for (String packageName : existing) {
             success &= setPackageHidden(pm, packageName, false);
         }
-        success &= setPackagesSuspended(pm, existing, false);
+        success &= setPackagesSuspended(context, pm, existing, false);
         return success;
     }
 
@@ -202,6 +202,7 @@ public final class SystemAppController {
             return false;
         }
         return setPackagesSuspended(
+                context,
                 context.getPackageManager(),
                 existingPackages(context.getPackageManager(), packageNames),
                 true
@@ -251,13 +252,14 @@ public final class SystemAppController {
         }
     }
 
-    private static boolean setPackagesSuspended(PackageManager pm,
+    private static boolean setPackagesSuspended(Context context,
+                                                PackageManager pm,
                                                 String[] packageNames,
                                                 boolean suspended) {
         if (packageNames == null || packageNames.length == 0) {
             return true;
         }
-        if (!hasPermissionForPackageManager(pm, PERMISSION_SUSPEND_APPS)) {
+        if (!hasPermission(context, PERMISSION_SUSPEND_APPS)) {
             AppLogger.w(TAG, "SUSPEND_APPS missing; test package maintenance unavailable");
             return false;
         }
@@ -310,13 +312,6 @@ public final class SystemAppController {
             AppLogger.e(TAG, "Unable to change test package suspended state", e);
             return false;
         }
-    }
-
-    private static boolean hasPermissionForPackageManager(PackageManager pm, String permission) {
-        // PackageManager does not expose its Context. The caller is always this process, and
-        // platform-signature test builds declare SUSPEND_APPS in the main manifest. Reflection
-        // will still fail securely if the permission was not granted.
-        return pm != null && permission != null;
     }
 
     public static boolean applyKioskPolicies(Context context) {
