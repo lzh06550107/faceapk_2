@@ -31,10 +31,10 @@ public class WifiAutoReconnectManagerTest {
     }
 
     @Test
-    public void ensureSavedWifiConnection_shouldSkipWhenNotDeviceOwner() {
+    public void ensureSavedWifiConnection_shouldSkipWhenNotManagedDevice() {
         FakeDeps deps = new FakeDeps();
         deps.savedSsid = "Office-WiFi";
-        deps.deviceOwner = false;
+        deps.managedDevice = false;
 
         WifiAutoReconnectManager.ensureSavedWifiConnection(deps);
 
@@ -137,7 +137,7 @@ public class WifiAutoReconnectManagerTest {
         long now = 100_000L;
         String savedSsid = "Office-WiFi";
         String savedPassword = "";
-        boolean deviceOwner = true;
+        boolean managedDevice = true;
         boolean hasWifiService = true;
         boolean wifiEnabled = true;
         boolean setWifiEnabledResult = true;
@@ -168,8 +168,8 @@ public class WifiAutoReconnectManagerTest {
         }
 
         @Override
-        public boolean isDeviceOwner() {
-            return deviceOwner;
+        public boolean canManageWifi() {
+            return managedDevice;
         }
 
         @Override
