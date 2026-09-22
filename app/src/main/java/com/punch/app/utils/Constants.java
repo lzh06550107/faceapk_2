@@ -109,6 +109,7 @@ public class Constants {
     public static final String STATUS_LEAVE = "leave";
     public static final String STATUS_REST = "rest";
 
+    public static final String ACTION_PUNCH_ACCEPT = "punch_accept";
     public static final String ACTION_PUNCH_PUSH = "punch_push";
     public static final String ACTION_PUNCH_STRESS_NO_UPLOAD = "stress_punch_no_upload";
 
@@ -147,5 +148,5 @@ public class Constants {
     public static final String ACTIVATION_STATUS_DISABLED = "disabled";
 
     public static final String DB_NAME = "punch.db";
-    public static final int DB_VERSION = 12;
+    public static final int DB_VERSION = 13;
 }
