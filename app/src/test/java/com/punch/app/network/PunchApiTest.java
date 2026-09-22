@@ -74,6 +74,7 @@ public class PunchApiTest extends ApiTestSupport {
         assertTrue(result.success);
         assertFalse(result.data.isOverCapacity);
         assertEquals(2, interceptor.getRequestCount());
+        assertEquals(interceptor.getRequestBody(0), interceptor.getRequestBody(1));
 
         Request request = interceptor.takeRequest();
         assertEquals("/v3/handheld/line/isOverCapacity", request.url().encodedPath());
