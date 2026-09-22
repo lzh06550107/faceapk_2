@@ -14,10 +14,6 @@ public final class PunchPersistence {
             return false;
         }
         DatabaseHelper db = DatabaseHelper.get(context);
-        boolean inserted = db.insertPunchRecord(record);
-        if (inserted) {
-            db.enqueueSyncItem(record.clientRecordId, queueAction);
-        }
-        return inserted;
+        return db.insertPunchRecordAndEnqueue(record, queueAction);
     }
 }
