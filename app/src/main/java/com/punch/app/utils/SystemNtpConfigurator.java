@@ -11,6 +11,8 @@ import android.provider.Settings;
 
 import com.punch.app.receiver.KioskDeviceAdminReceiver;
 
+import androidx.annotation.RequiresApi;
+
 public final class SystemNtpConfigurator {
     private static final String KEY_NTP_SERVER = "ntp_server";
     private static final String PERMISSION_WRITE_SECURE_SETTINGS =
@@ -76,6 +78,14 @@ public final class SystemNtpConfigurator {
             return ApplyResult.failure("DevicePolicyManager unavailable", host, false);
         }
 
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return ApplyResult.failure(
+                    "System NTP policy requires Android 11 or newer",
+                    host,
+                    false
+            );
+        }
+
         try {
             return applyWithSnapshot(context, dpm, admin, host);
         } catch (RuntimeException e) {
@@ -87,6 +97,7 @@ public final class SystemNtpConfigurator {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private static ApplyResult applyWithSnapshot(Context context,
                                                  DevicePolicyManager dpm,
                                                  ComponentName admin,
@@ -184,6 +195,7 @@ public final class SystemNtpConfigurator {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private static boolean rollback(Context context,
                                     DevicePolicyManager dpm,
                                     ComponentName admin,
