@@ -1721,13 +1721,9 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 punchTime
         );
 
-        if (!viewGate.isActive(taskViewToken)) {
-            PunchSnapshotHelper.deleteSnapshot(snapshot.path);
-            setRecognizing(false);
-            return;
-        }
-
-        postToActiveView(taskViewToken, () -> handlePunchAcceptance(
+        handlePunchAcceptance(
+                context,
+                taskViewToken,
                 emp,
                 matchScore,
                 clientRecordId,
@@ -1736,10 +1732,12 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 teamBindingId,
                 snapshot,
                 acceptance
-        ));
+        );
     }
 
-    private void handlePunchAcceptance(Employee emp,
+    private void handlePunchAcceptance(Context context,
+                                       int taskViewToken,
+                                       Employee emp,
                                        float matchScore,
                                        String clientRecordId,
                                        long punchTime,
@@ -1751,12 +1749,24 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             String detail = acceptance != null && !isBlank(acceptance.message)
                     ? acceptance.message
                     : "服务器连接失败";
-            showPunchAcceptanceFailure(emp, detail, snapshot);
+            if (viewGate.isActive(taskViewToken)) {
+                postToActiveView(taskViewToken,
+                        () -> showPunchAcceptanceFailure(emp, detail, snapshot));
+            } else {
+                PunchSnapshotHelper.deleteSnapshot(snapshot.path);
+                setRecognizing(false);
+            }
             return;
         }
 
         if (acceptance.data.isOverCapacity) {
-            showLineCapacityReached(emp, snapshot);
+            if (viewGate.isActive(taskViewToken)) {
+                postToActiveView(taskViewToken,
+                        () -> showLineCapacityReached(emp, snapshot));
+            } else {
+                PunchSnapshotHelper.deleteSnapshot(snapshot.path);
+                setRecognizing(false);
+            }
             return;
         }
 
@@ -1782,7 +1792,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         record.snapCapturedAt = snapshot.capturedAtSeconds;
         record.isSynced = 0;
 
-        savePunchAndSync(record);
+        persistAcceptedPunch(context, taskViewToken, record);
     }
 
     private void showLineCapacityReached(Employee emp,
@@ -1822,21 +1832,35 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         );
     }
 
-    private void savePunchAndSync(PunchRecord record) {
+    private void persistAcceptedPunch(Context context,
+                                      int taskViewToken,
+                                      PunchRecord record) {
         boolean inserted = PunchPersistence.persist(
-                requireContext(), record, Constants.ACTION_PUNCH_PUSH);
+                context, record, Constants.ACTION_PUNCH_PUSH);
         if (inserted) {
-            postToActiveView(() -> showPunchResult(record, false, true));
+            SyncService.triggerSync(context);
+            if (viewGate.isActive(taskViewToken)) {
+                postToActiveView(taskViewToken,
+                        () -> showPunchResult(record, false, false));
+            } else {
+                setRecognizing(false);
+            }
             return;
         }
 
-        DatabaseHelper db = DatabaseHelper.get(requireContext());
+        DatabaseHelper db = DatabaseHelper.get(context);
         PunchRecord existing = db.getUnsyncedPunchRecord(record.clientRecordId);
         if (existing != null) {
             if (!safeString(record.snapImagePath).equals(safeString(existing.snapImagePath))) {
                 PunchSnapshotHelper.deleteSnapshot(record.snapImagePath);
             }
-            postToActiveView(() -> showPunchResult(existing, false, true));
+            SyncService.triggerSync(context);
+            if (viewGate.isActive(taskViewToken)) {
+                postToActiveView(taskViewToken,
+                        () -> showPunchResult(existing, false, false));
+            } else {
+                setRecognizing(false);
+            }
             return;
         }
 
@@ -1848,7 +1872,13 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 "client_record_id=" + safeString(record.clientRecordId)
                         + "\nemployee=" + safeString(record.empId)
         );
-        postToActiveView(() -> showAcceptedPunchPersistenceFailure(record));
+        if (viewGate.isActive(taskViewToken)) {
+            postToActiveView(taskViewToken,
+                    () -> showAcceptedPunchPersistenceFailure(record));
+        } else {
+            PunchSnapshotHelper.deleteSnapshot(record.snapImagePath);
+            setRecognizing(false);
+        }
     }
 
     private void showAcceptedPunchPersistenceFailure(PunchRecord record) {
