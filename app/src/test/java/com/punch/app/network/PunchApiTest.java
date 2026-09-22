@@ -59,6 +59,19 @@ public class PunchApiTest extends ApiTestSupport {
     }
 
     @Test
+    public void acceptLinePunch_shouldFailWhenTokenMissing() {
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                1782424800L
+        );
+
+        assertFalse(result.success);
+        assertEquals(401, result.code);
+    }
+
+    @Test
     public void acceptLinePunch_shouldParseOverCapacity() {
         SessionManager.get().saveToken("token-abc", 1893456000L);
         interceptor.enqueueJson(200, successEnvelope("{\"is_over_capacity\":true}"));
