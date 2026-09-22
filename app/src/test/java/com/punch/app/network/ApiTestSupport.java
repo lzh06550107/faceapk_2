@@ -87,9 +87,18 @@ abstract class ApiTestSupport {
         private final Deque<QueuedResponse> responses = new ArrayDeque<>();
         private Request lastRequest;
         private String lastBody = "";
+        private int requestCount;
 
         void enqueueJson(int httpCode, String body) {
-            responses.addLast(new QueuedResponse(httpCode, body));
+            responses.addLast(new QueuedResponse(httpCode, body, null));
+        }
+
+        void enqueueFailure(String message) {
+            responses.addLast(new QueuedResponse(0, "", new IOException(message)));
+        }
+
+        int getRequestCount() {
+            return requestCount;
         }
 
         Request takeRequest() {
@@ -102,6 +111,7 @@ abstract class ApiTestSupport {
 
         @Override
         public Response intercept(Chain chain) throws IOException {
+            requestCount++;
             lastRequest = chain.request();
             if (lastRequest.body() != null) {
                 okio.Buffer buffer = new okio.Buffer();
@@ -112,6 +122,9 @@ abstract class ApiTestSupport {
             }
 
             QueuedResponse queued = responses.removeFirst();
+            if (queued.failure != null) {
+                throw queued.failure;
+            }
             ResponseBody responseBody = ResponseBody.create(
                     queued.body,
                     MediaType.parse("application/json; charset=utf-8")
@@ -129,10 +142,12 @@ abstract class ApiTestSupport {
     private static final class QueuedResponse {
         final int httpCode;
         final String body;
+        final IOException failure;
 
-        QueuedResponse(int httpCode, String body) {
+        QueuedResponse(int httpCode, String body, IOException failure) {
             this.httpCode = httpCode;
             this.body = body;
+            this.failure = failure;
         }
     }
 
