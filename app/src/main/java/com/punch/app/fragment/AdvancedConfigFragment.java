@@ -18,7 +18,6 @@ import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -40,13 +39,11 @@ import com.punch.app.network.dto.DeviceDto;
 import com.punch.app.receiver.KioskDeviceAdminReceiver;
 import com.punch.app.utils.Constants;
 import com.punch.app.utils.KioskManager;
-import com.punch.app.utils.PunchTimeResolver;
 import com.punch.app.utils.ScreenTimeoutPolicy;
 import com.punch.app.utils.ScreenTimeoutPolicyManager;
 import com.punch.app.utils.SessionManager;
 
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -82,9 +79,6 @@ public class AdvancedConfigFragment extends Fragment {
             300_000L,
             600_000L
     };
-    private static final int PUNCH_INTERVAL_STEP_MINUTES = 1;
-    private static final int PUNCH_INTERVAL_MIN_MINUTES = 0;
-    private static final int PUNCH_INTERVAL_MAX_MINUTES = 240;
     private static final int PUNCH_RESULT_DISPLAY_STEP_MS = 100;
     private static final int PUNCH_RESULT_DISPLAY_MIN_MS = 0;
     private static final int PUNCH_RESULT_DISPLAY_MAX_MS = 5000;
@@ -98,11 +92,9 @@ public class AdvancedConfigFragment extends Fragment {
     private static final long CLEAR_DEVICE_OWNER_TIMEOUT_MS = 20000L;
     private EditText etBaseUrl;
     private EditText etCompanyId;
-    private EditText etPunchIntervalMinutes;
     private EditText etPunchResultDisplayMs;
     private EditText etRecognitionFrameIntervalMs;
     private EditText etSuccessCooldownMs;
-    private LinearLayout layoutOvertimeOptions;
     private TextView tvBaiduFingerprint;
     private TextView tvActivationMode;
     private TextView tvActivationStatus;
@@ -130,15 +122,12 @@ public class AdvancedConfigFragment extends Fragment {
     private MaterialButton btnViewLocalConfig;
     private MaterialButton btnViewLocalEmployees;
     private MaterialButton btnClearDeviceOwner;
-    private MaterialButton btnPunchIntervalMinus;
-    private MaterialButton btnPunchIntervalPlus;
     private MaterialButton btnPunchResultDisplayMinus;
     private MaterialButton btnPunchResultDisplayPlus;
     private MaterialButton btnRecognitionFrameIntervalMinus;
     private MaterialButton btnRecognitionFrameIntervalPlus;
     private MaterialButton btnSuccessCooldownMinus;
     private MaterialButton btnSuccessCooldownPlus;
-    private final List<Switch> overtimeSwitches = new ArrayList<>();
 
     private String selectedDistanceModeValue = DISTANCE_VALUES[1];
     private int selectedRecognitionTimeoutValue = TIMEOUT_OPTIONS[0];
@@ -171,11 +160,9 @@ public class AdvancedConfigFragment extends Fragment {
 
         etBaseUrl = view.findViewById(R.id.et_base_url);
         etCompanyId = view.findViewById(R.id.et_company_id);
-        etPunchIntervalMinutes = view.findViewById(R.id.et_punch_interval_minutes);
         etPunchResultDisplayMs = view.findViewById(R.id.et_punch_result_display_ms);
         etRecognitionFrameIntervalMs = view.findViewById(R.id.et_recognition_frame_interval_ms);
         etSuccessCooldownMs = view.findViewById(R.id.et_success_cooldown_ms);
-        layoutOvertimeOptions = view.findViewById(R.id.layout_overtime_options);
         tvBaiduFingerprint = view.findViewById(R.id.tv_baidu_fingerprint);
         tvActivationMode = view.findViewById(R.id.tv_activation_mode);
         tvActivationStatus = view.findViewById(R.id.tv_activation_status);
@@ -203,8 +190,6 @@ public class AdvancedConfigFragment extends Fragment {
         btnViewLocalConfig = view.findViewById(R.id.btn_view_local_config);
         btnViewLocalEmployees = view.findViewById(R.id.btn_view_local_employees);
         btnClearDeviceOwner = view.findViewById(R.id.btn_clear_device_owner);
-        btnPunchIntervalMinus = view.findViewById(R.id.btn_punch_interval_minus);
-        btnPunchIntervalPlus = view.findViewById(R.id.btn_punch_interval_plus);
         btnPunchResultDisplayMinus = view.findViewById(R.id.btn_punch_result_display_minus);
         btnPunchResultDisplayPlus = view.findViewById(R.id.btn_punch_result_display_plus);
         btnRecognitionFrameIntervalMinus = view.findViewById(R.id.btn_recognition_frame_interval_minus);
@@ -222,8 +207,6 @@ public class AdvancedConfigFragment extends Fragment {
         btnViewLocalConfig.setOnClickListener(v -> showLocalConfigDialog());
         btnViewLocalEmployees.setOnClickListener(v -> startActivity(new Intent(requireContext(), LocalEmployeeDebugActivity.class)));
         btnClearDeviceOwner.setOnClickListener(v -> confirmClearDeviceOwner());
-        btnPunchIntervalMinus.setOnClickListener(v -> adjustPunchInterval(-PUNCH_INTERVAL_STEP_MINUTES));
-        btnPunchIntervalPlus.setOnClickListener(v -> adjustPunchInterval(PUNCH_INTERVAL_STEP_MINUTES));
         btnPunchResultDisplayMinus.setOnClickListener(v -> adjustIntField(
                 etPunchResultDisplayMs,
                 -PUNCH_RESULT_DISPLAY_STEP_MS,
@@ -417,7 +400,6 @@ public class AdvancedConfigFragment extends Fragment {
         selectRecognitionTimeout(SessionManager.get().getRecognitionTimeoutSeconds());
         selectScreenTimeout(SessionManager.get().getScreenTimeoutMs());
         updateScreenTimeoutControlState();
-        etPunchIntervalMinutes.setText(String.valueOf(SessionManager.get().getPunchTimeWindowMinutes()));
         switchFastPunch.setChecked(SessionManager.get().isFastPunchEnabled());
         switchShowPunchResultCard.setChecked(SessionManager.get().shouldShowPunchResultCard());
         etPunchResultDisplayMs.setText(String.valueOf(SessionManager.get().getPunchResultDisplayMs()));
@@ -425,91 +407,8 @@ public class AdvancedConfigFragment extends Fragment {
         selectPunchSpeechRate(SessionManager.get().getPunchSpeechRate());
         etRecognitionFrameIntervalMs.setText(String.valueOf(SessionManager.get().getRecognitionFrameIntervalMs()));
         etSuccessCooldownMs.setText(String.valueOf(SessionManager.get().getSuccessCooldownMs()));
-        renderOvertimeOptions(SessionManager.get().getOvertimeSignOutOptions());
         updateKioskButtonState();
         updateClearDeviceOwnerButtonState();
-    }
-
-    private void renderOvertimeOptions(List<String> enabledOptions) {
-        if (layoutOvertimeOptions == null || !isAdded()) {
-            return;
-        }
-        overtimeSwitches.clear();
-        layoutOvertimeOptions.removeAllViews();
-
-        List<String> timeRanges = SessionManager.get().getCurrentTeamTimeRanges();
-        if (timeRanges == null || timeRanges.isEmpty()) {
-            TextView emptyView = new TextView(requireContext());
-            emptyView.setText("\u5f53\u524d\u73ed\u7ec4\u6682\u65e0\u53ef\u914d\u7f6e\u7684\u4e0b\u73ed\u9879");
-            emptyView.setTextSize(12);
-            layoutOvertimeOptions.addView(emptyView);
-            return;
-        }
-
-        List<String> optionLabels = new ArrayList<>();
-        for (String timeRange : timeRanges) {
-            if (timeRange == null || timeRange.trim().isEmpty()) {
-                continue;
-            }
-            optionLabels.add(buildSignOutOptionLabel(timeRange));
-        }
-        boolean useDefaultLastOption = !SessionManager.get().hasOvertimeSignOutOptionsConfig()
-                && !optionLabels.isEmpty();
-        String defaultEnabledOption = useDefaultLastOption
-                ? optionLabels.get(optionLabels.size() - 1)
-                : "";
-
-        for (String optionLabel : optionLabels) {
-            LinearLayout row = new LinearLayout(requireContext());
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            row.setPadding(0, dp(6), 0, dp(6));
-
-            TextView labelView = new TextView(requireContext());
-            labelView.setText(optionLabel);
-            labelView.setTextSize(13);
-            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
-                    0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    1f
-            );
-            row.addView(labelView, labelParams);
-
-            Switch overtimeSwitch = new Switch(requireContext());
-            overtimeSwitch.setTag(optionLabel);
-            overtimeSwitch.setChecked(
-                    (enabledOptions != null && enabledOptions.contains(optionLabel))
-                            || optionLabel.equals(defaultEnabledOption)
-            );
-            row.addView(overtimeSwitch);
-            overtimeSwitches.add(overtimeSwitch);
-            layoutOvertimeOptions.addView(row);
-        }
-    }
-
-    private List<String> collectSelectedOvertimeSignOutOptions() {
-        List<String> selected = new ArrayList<>();
-        for (Switch overtimeSwitch : overtimeSwitches) {
-            if (!overtimeSwitch.isChecked()) {
-                continue;
-            }
-            Object tag = overtimeSwitch.getTag();
-            if (tag instanceof String) {
-                String value = ((String) tag).trim();
-                if (!value.isEmpty() && !selected.contains(value)) {
-                    selected.add(value);
-                }
-            }
-        }
-        return selected;
-    }
-
-    private String buildSignOutOptionLabel(String timeRange) {
-        return timeRange.trim() + " \u4e0b\u73ed";
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     private void bindBaiduFingerprint() {
@@ -549,12 +448,6 @@ public class AdvancedConfigFragment extends Fragment {
         }
 
         SessionManager session = SessionManager.get();
-        int punchIntervalMinutes = parsePunchIntervalMinutes();
-        if (punchIntervalMinutes < 0) {
-            Toast.makeText(requireContext(), "打卡间隔必须为 0-240 分钟", Toast.LENGTH_SHORT).show();
-            etPunchIntervalMinutes.requestFocus();
-            return;
-        }
         int punchResultDisplayMs = parseIntField(
                 etPunchResultDisplayMs,
                 PUNCH_RESULT_DISPLAY_MIN_MS,
@@ -583,18 +476,6 @@ public class AdvancedConfigFragment extends Fragment {
         if (successCooldownMs < 0) {
             Toast.makeText(requireContext(), "成功后冷却必须为 0-3000 毫秒", Toast.LENGTH_SHORT).show();
             etSuccessCooldownMs.requestFocus();
-            return;
-        }
-        List<String> overtimeSignOutOptions = collectSelectedOvertimeSignOutOptions();
-        PunchTimeResolver.WindowValidationResult windowValidation =
-                PunchTimeResolver.validatePunchTimeWindows(
-                        session.getCurrentTeamTimeRanges(),
-                        punchIntervalMinutes,
-                        overtimeSignOutOptions
-                );
-        if (!windowValidation.valid) {
-            Toast.makeText(requireContext(), windowValidation.buildMessage(), Toast.LENGTH_LONG).show();
-            etPunchIntervalMinutes.requestFocus();
             return;
         }
         if (selectedScreenTimeoutMs != session.getScreenTimeoutMs()) {
@@ -626,7 +507,6 @@ public class AdvancedConfigFragment extends Fragment {
         session.saveLivenessThreshold(seekLivenessThreshold.getProgress() / 100f);
         session.saveMaskDetectEnabled(switchMaskDetect.isChecked());
         session.saveRecognitionTimeoutSeconds(selectedRecognitionTimeoutValue);
-        session.savePunchTimeWindowMinutes(punchIntervalMinutes);
         session.saveFastPunchEnabled(switchFastPunch.isChecked());
         session.saveShowPunchResultCard(switchShowPunchResultCard.isChecked());
         session.savePunchResultDisplayMs(punchResultDisplayMs);
@@ -634,7 +514,6 @@ public class AdvancedConfigFragment extends Fragment {
         session.savePunchSpeechRate(selectedPunchSpeechRateValue);
         session.saveRecognitionFrameIntervalMs(recognitionFrameIntervalMs);
         session.saveSuccessCooldownMs(successCooldownMs);
-        session.saveOvertimeSignOutOptions(overtimeSignOutOptions);
 
         if (FaceManager.get().isInitialized()) {
             FaceManager.get().refreshRuntimeConfig();
@@ -688,7 +567,6 @@ public class AdvancedConfigFragment extends Fragment {
         appendLine(builder, "\u73ed\u7ec4", buildTeamBindingText(session));
         appendLine(builder, "\u73ed\u6b21\u65f6\u95f4", joinStrings(session.getCurrentTeamTimeRanges()));
         appendLine(builder, "\u6253\u5361\u4eba\u6570\u4e0a\u9650", String.valueOf(session.getCheckCount()));
-        appendLine(builder, "\u6253\u5361\u95f4\u9694", session.getPunchTimeWindowMinutes() + "\u5206\u949f");
         appendLine(builder, "\u5feb\u901f\u6253\u5361", formatBoolean(session.isFastPunchEnabled()));
         appendLine(builder, "\u663e\u793a\u6253\u5361\u7ed3\u679c", formatBoolean(session.shouldShowPunchResultCard()));
         appendLine(builder, "\u7ed3\u679c\u663e\u793a\u65f6\u957f", session.getPunchResultDisplayMs() + "ms");
@@ -696,7 +574,6 @@ public class AdvancedConfigFragment extends Fragment {
         appendLine(builder, "\u8bed\u97f3\u901f\u5ea6", formatFloat(session.getPunchSpeechRate()) + "x");
         appendLine(builder, "\u8bc6\u522b\u5e27\u95f4\u9694", session.getRecognitionFrameIntervalMs() + "ms");
         appendLine(builder, "\u6210\u529f\u540e\u51b7\u5374", session.getSuccessCooldownMs() + "ms");
-        appendLine(builder, "\u52a0\u73ed\u4e0b\u73ed\u9879", joinStrings(session.getOvertimeSignOutOptions()));
         appendLine(builder, "\u53ef\u9009\u7ebf\u4f53", buildLineOptionsText(session.getLineBindingOptions()));
         appendLine(builder, "\u53ef\u9009\u73ed\u7ec4", buildTeamOptionsText(session.getTeamBindingOptions()));
 
@@ -1208,19 +1085,6 @@ public class AdvancedConfigFragment extends Fragment {
         }
     }
 
-    private void adjustPunchInterval(int deltaMinutes) {
-        int current = parsePunchIntervalMinutes();
-        if (current < 0) {
-            current = SessionManager.get().getPunchTimeWindowMinutes();
-        }
-        int adjusted = Math.max(
-                PUNCH_INTERVAL_MIN_MINUTES,
-                Math.min(PUNCH_INTERVAL_MAX_MINUTES, current + deltaMinutes)
-        );
-        etPunchIntervalMinutes.setText(String.valueOf(adjusted));
-        etPunchIntervalMinutes.setSelection(etPunchIntervalMinutes.getText().length());
-    }
-
     private void adjustIntField(EditText editText, int delta, int min, int max, int fallback) {
         int current = parseIntField(editText, min, max);
         if (current < 0) {
@@ -1229,24 +1093,6 @@ public class AdvancedConfigFragment extends Fragment {
         int adjusted = Math.max(min, Math.min(max, current + delta));
         editText.setText(String.valueOf(adjusted));
         editText.setSelection(editText.getText().length());
-    }
-
-    private int parsePunchIntervalMinutes() {
-        String value = etPunchIntervalMinutes.getText() == null
-                ? ""
-                : etPunchIntervalMinutes.getText().toString().trim();
-        if (value.isEmpty()) {
-            return -1;
-        }
-        try {
-            int minutes = Integer.parseInt(value);
-            if (minutes < PUNCH_INTERVAL_MIN_MINUTES || minutes > PUNCH_INTERVAL_MAX_MINUTES) {
-                return -1;
-            }
-            return minutes;
-        } catch (NumberFormatException ignored) {
-            return -1;
-        }
     }
 
     private int parseIntField(EditText editText, int min, int max) {
