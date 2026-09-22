@@ -727,10 +727,13 @@ public final class SyncCoordinator {
         if (repaired > 0) {
             InteractionLogger.logBusiness(
                     InteractionLogger.GROUP_PUNCH,
-                    "补建打卡同步队列",
-                    "补建 " + repaired + " 条历史未同步打卡记录"
+                    "修复打卡持久化任务",
+                    "修复 " + repaired + " 条待处理打卡任务"
             );
         }
+
+        syncPendingPunchAcceptances(context);
+
         if (safeTrigger.shouldResetLimitedPunchRetries()) {
             int reset = db.resetLimitedPunchSyncRetries();
             if (reset > 0) {
@@ -790,6 +793,15 @@ public final class SyncCoordinator {
                 continue;
             }
 
+            if (!db.markPunchUploading(punch.clientRecordId)) {
+                InteractionLogger.logBusinessFailure(
+                        InteractionLogger.GROUP_PUNCH,
+                        "移除状态不匹配的打卡上传任务",
+                        "client_record_id=" + safeString(punch.clientRecordId));
+                db.removeSyncQueueItem(item.id);
+                continue;
+            }
+
             InteractionLogger.logBusiness(
                     InteractionLogger.GROUP_PUNCH,
                     "开始上传打卡记录",
@@ -811,14 +823,19 @@ public final class SyncCoordinator {
                         )
                 );
             } else {
-                db.incrementSyncRetry(item.id);
+                db.markPunchUploadPending(punch.clientRecordId);
+                int nextRetryCount = item.retryCount;
+                if (PunchSyncPolicy.shouldConsumeRetry(result.code)) {
+                    db.incrementSyncRetry(item.id);
+                    nextRetryCount += 1;
+                }
                 AppLogger.w(TAG, "Punch sync failed: " + result.message);
                 InteractionLogger.logBusinessFailure(
                         InteractionLogger.GROUP_PUNCH,
                         "打卡记录上传失败",
                         buildPunchSyncLogDetail(
                                 punch,
-                                item.retryCount + 1,
+                                nextRetryCount,
                                 "code=" + result.code + "\nreason=" + safeString(result.message)
                         )
                 );
@@ -827,6 +844,108 @@ public final class SyncCoordinator {
                     break;
                 }
             }
+        }
+    }
+
+    private void syncPendingPunchAcceptances(Context context) {
+        DatabaseHelper db = DatabaseHelper.get(context);
+        List<SyncQueueItem> queue = db.getSyncQueue(
+                Constants.ACTION_PUNCH_ACCEPT,
+                Constants.PUNCH_BATCH_SIZE);
+        if (queue.isEmpty()) {
+            return;
+        }
+
+        long batchStartedAt = System.nanoTime();
+        int processed = 0;
+        for (SyncQueueItem item : queue) {
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - batchStartedAt);
+            if (!PunchSyncPolicy.canContinueBatch(
+                    processed,
+                    elapsedMillis,
+                    Constants.PUNCH_BATCH_SIZE,
+                    Constants.PUNCH_SYNC_TIME_BUDGET_MS)) {
+                break;
+            }
+            processed += 1;
+
+            PunchRecord punch = db.getPunchRecord(item.recordId);
+            if (punch == null) {
+                db.removeSyncQueueItem(item.id);
+                continue;
+            }
+            if (!PunchRecord.STATE_ACCEPTING.equals(punch.punchState)) {
+                db.removeSyncQueueItem(item.id);
+                continue;
+            }
+
+            InteractionLogger.logBusiness(
+                    InteractionLogger.GROUP_PUNCH,
+                    "恢复确认待定打卡",
+                    "client_record_id=" + safeString(punch.clientRecordId)
+                            + "\nnumbers=" + safeString(punch.empId)
+                            + "\nsnap_time=" + punch.punchTime
+            );
+            ApiResult<PunchDto.LineCapacityData> acceptance = ApiService.acceptLinePunch(
+                    punch.clientRecordId,
+                    punch.empId,
+                    punch.lineCode,
+                    punch.punchTime
+            );
+
+            if (acceptance != null && acceptance.success && acceptance.data != null) {
+                if (acceptance.data.isOverCapacity) {
+                    if (db.discardPunchIntent(punch.clientRecordId)) {
+                        PunchSnapshotHelper.deleteSnapshot(punch.snapImagePath);
+                    }
+                    InteractionLogger.logBusinessFailure(
+                            InteractionLogger.GROUP_PUNCH,
+                            "待确认打卡最终被容量规则拒绝",
+                            "client_record_id=" + safeString(punch.clientRecordId)
+                    );
+                    continue;
+                }
+
+                if (!db.markPunchAcceptedAndQueueUpload(punch.clientRecordId)) {
+                    InteractionLogger.logBusinessFailure(
+                            InteractionLogger.GROUP_PUNCH,
+                            "待确认打卡本地状态推进失败",
+                            "client_record_id=" + safeString(punch.clientRecordId)
+                    );
+                    break;
+                }
+                InteractionLogger.logBusiness(
+                        InteractionLogger.GROUP_PUNCH,
+                        "待确认打卡已确认受理",
+                        "client_record_id=" + safeString(punch.clientRecordId)
+                );
+                continue;
+            }
+
+            int code = acceptance == null ? -1 : acceptance.code;
+            String reason = acceptance == null ? "" : safeString(acceptance.message);
+            if (PunchAcceptancePolicy.shouldRetryLater(code)) {
+                InteractionLogger.logBusinessFailure(
+                        InteractionLogger.GROUP_PUNCH,
+                        "待确认打卡仍无法确认",
+                        "client_record_id=" + safeString(punch.clientRecordId)
+                                + "\ncode=" + code
+                                + "\nreason=" + reason
+                );
+                break;
+            }
+
+            if (db.discardPunchIntent(punch.clientRecordId)) {
+                PunchSnapshotHelper.deleteSnapshot(punch.snapImagePath);
+            }
+            InteractionLogger.logBusinessFailure(
+                    InteractionLogger.GROUP_PUNCH,
+                    "待确认打卡被服务端明确拒绝",
+                    "client_record_id=" + safeString(punch.clientRecordId)
+                            + "\ncode=" + code
+                            + "\nreason=" + reason
+            );
         }
     }
 
