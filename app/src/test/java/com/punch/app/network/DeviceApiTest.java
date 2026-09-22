@@ -98,7 +98,7 @@ public class DeviceApiTest extends ApiTestSupport {
         assertEquals("Bearer token-abc", request.header("Authorization"));
         String body = interceptor.takeBody();
         assertTrue(body.contains("\"page\":1"));
-        assertTrue(body.contains("\"page_size\":500"));
+        assertTrue(body.contains("\"page_size\":200"));
         assertTrue(body.contains("\"op_status\":1"));
         assertTrue(body.contains("\"device_id\":\"A1B2C3D4E5F60789\""));
     }

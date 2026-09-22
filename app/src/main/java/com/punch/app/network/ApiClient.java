@@ -201,7 +201,7 @@ public class ApiClient {
             logInteraction(request, response.code(), code, ok, msg, ok ? "" : msg, bodyStr, startedAt);
             return new ApiResponse(ok, code, msg, ok && obj.has("data") ? obj.get("data") : null);
         } catch (IOException e) {
-            Log.e(TAG, "Request failed: " + e.getMessage());
+            logNetworkError("Request failed: " + e.getMessage());
             logInteraction(request, 0, 0, false, "", e.getMessage(), "", startedAt);
             return new ApiResponse(false, -1, e.getMessage(), null);
         }
@@ -281,6 +281,14 @@ public class ApiClient {
                     destination
             );
             return false;
+        }
+    }
+
+    private static void logNetworkError(String message) {
+        try {
+            Log.e(TAG, message == null ? "" : message);
+        } catch (RuntimeException ignored) {
+            // android.util.Log is an unimplemented stub in plain JVM unit tests.
         }
     }
 
