@@ -31,6 +31,7 @@ import okio.ByteString;
 public final class ApiService {
     private static final int EMPLOYEE_SYNC_PAGE_SIZE = 200;
     private static final int PUNCH_ACCEPT_MAX_ATTEMPTS = 2;
+    private static final long PUNCH_ACCEPT_CALL_TIMEOUT_MS = 5_000L;
     private static final String TAG = "ApiService";
 
     private ApiService() {
@@ -140,7 +141,11 @@ public final class ApiService {
 
         ApiResponse response = null;
         for (int attempt = 1; attempt <= PUNCH_ACCEPT_MAX_ATTEMPTS; attempt++) {
-            response = ApiClient.post(ApiEndpoints.LINE_IS_OVER_CAPACITY, body);
+            response = ApiClient.post(
+                    ApiEndpoints.LINE_IS_OVER_CAPACITY,
+                    body,
+                    PUNCH_ACCEPT_CALL_TIMEOUT_MS
+            );
             if (response == null || response.success || response.code != -1) {
                 break;
             }
