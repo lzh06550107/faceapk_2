@@ -24,6 +24,7 @@ import java.util.Locale;
 
 public class PunchRecordAdapter extends RecyclerView.Adapter<PunchRecordAdapter.VH> {
     private static final String PUNCH_TYPE_FREE = "free";
+    private static final String PUNCH_TYPE_GENERIC = "punch";
 
     private final Context appContext;
     private List<PunchRecord> items;
@@ -61,7 +62,10 @@ public class PunchRecordAdapter extends RecyclerView.Adapter<PunchRecordAdapter.
                 .format(new Date(record.punchTime * 1000L));
         holder.tvTime.setText(time);
 
-        if (PUNCH_TYPE_FREE.equals(record.punchType)) {
+        if (PUNCH_TYPE_GENERIC.equals(record.punchType)) {
+            holder.tvType.setText("打卡");
+            holder.tvType.setBackgroundColor(0xFF0D5FA8);
+        } else if (PUNCH_TYPE_FREE.equals(record.punchType)) {
             holder.tvType.setText("自由打卡");
             holder.tvType.setBackgroundColor(0xFF6A1B9A);
         } else {
