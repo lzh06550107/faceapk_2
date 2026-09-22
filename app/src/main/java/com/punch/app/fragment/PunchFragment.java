@@ -200,7 +200,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         viewToken = viewGate.open();
 
         layoutHeader = view.findViewById(R.id.layout_punch_header);
-        layoutControls = view.findViewById(R.id.layout_punch_controls);
         layoutCameraContainer = view.findViewById(R.id.layout_camera_container);
         layoutCameraLoading = view.findViewById(R.id.layout_camera_loading);
         layoutPunchStatusPanel = view.findViewById(R.id.layout_punch_status_panel);
@@ -226,8 +225,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         tvEmployeeSyncTitle = view.findViewById(R.id.tv_employee_sync_title);
         tvEmployeeSyncDetail = view.findViewById(R.id.tv_employee_sync_detail);
         progressEmployeeSync = view.findViewById(R.id.progress_employee_sync);
-        spinnerShift = view.findViewById(R.id.spinner_shift);
-        switchSpecialTime = view.findViewById(R.id.switch_special_time);
         layoutResult = view.findViewById(R.id.layout_result);
         layoutResultAvatar = view.findViewById(R.id.layout_result_avatar);
         layoutPunchStatusHistory = view.findViewById(R.id.layout_punch_status_history);
@@ -235,31 +232,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         soundEnabled = SessionManager.get().isSoundEnabled();
 
         refreshBindingHeader();
-
-        punchOptionAdapter = new PunchOptionAdapter(requireContext(), punchOptions);
-        spinnerShift.setAdapter(punchOptionAdapter);
-        spinnerShift.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                userChangingPunchSelection = true;
-            }
-            return false;
-        });
-        spinnerShift.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View itemView, int position, long id) {
-                if (userChangingPunchSelection) {
-                    ambiguousPunchSelectionPending = false;
-                    userChangingPunchSelection = false;
-                }
-                updatePunchTypeFromSelection();
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-                userChangingPunchSelection = false;
-            }
-        });
-        switchSpecialTime.setOnCheckedChangeListener((buttonView, isChecked) -> specialTimeEnabled = isChecked);
 
         btnSwitchCamera.setOnClickListener(v -> toggleCameraFacing());
         btnSwitchCamera.setVisibility(hasMultipleCameras() ? View.VISIBLE : View.GONE);
@@ -274,8 +246,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         updatePunchToggleLabel();
         updateSwitchCameraLabel();
         updateFullscreenButtonLabel();
-        rebuildPunchOptions();
-        updatePunchTypeFromSelection();
         initAudioFeedback();
         PunchApplication app = PunchApplication.get();
         if (app != null) {
@@ -479,9 +449,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         markPreviewLayoutSettling();
         if (layoutHeader != null) {
             layoutHeader.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
-        }
-        if (layoutControls != null) {
-            layoutControls.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         }
         if (layoutCameraContainer != null) {
             LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) layoutCameraContainer.getLayoutParams();
@@ -1458,8 +1425,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             if (tvLine != null) {
                 refreshBindingHeader();
             }
-            rebuildPunchOptions();
-        }
+            }
     }
 
 
@@ -2476,7 +2442,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         }
         releaseAudioFeedback();
         layoutHeader = null;
-        layoutControls = null;
         layoutCameraContainer = null;
         layoutCameraLoading = null;
         layoutPunchStatusPanel = null;
@@ -2497,13 +2462,10 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         tvPunchStatusCurrent = null;
         tvPunchStatusToggle = null;
         tvPunchStatusHint = null;
-        spinnerShift = null;
-        switchSpecialTime = null;
         layoutResult = null;
         layoutResultAvatar = null;
         layoutPunchStatusHistory = null;
         ivResultAvatar = null;
-        punchOptionAdapter = null;
         super.onDestroyView();
     }
 
