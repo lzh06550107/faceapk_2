@@ -45,45 +45,6 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/layout_punch_controls"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="@color/white"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:padding="12dp">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="&#x6253;&#x5361;&#x9879;&#xFF1A;"
-            android:textSize="13sp"
-            android:textStyle="bold" />
-
-        <Spinner
-            android:id="@+id/spinner_shift"
-            android:layout_width="0dp"
-            android:layout_height="36dp"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:background="@drawable/bg_spinner" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:text="&#x7279;&#x6B8A;&#x65F6;&#x95F4;&#xFF1A;"
-            android:textSize="13sp"
-            android:textStyle="bold" />
-
-        <Switch
-            android:id="@+id/switch_special_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="6dp" />
-    </LinearLayout>
-
     <FrameLayout
         android:id="@+id/layout_camera_container"
         android:layout_width="match_parent"
