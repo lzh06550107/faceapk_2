@@ -148,6 +148,21 @@ public class DatabaseHelper extends SQLiteOpenHelper {
             addColumnIfMissing(db, "face_apply_tasks", "state", "TEXT NOT NULL DEFAULT 'PENDING'");
             addColumnIfMissing(db, "face_apply_tasks", "next_retry_at", "INTEGER NOT NULL DEFAULT 0");
         }
+        if (oldVersion < 13) {
+            addColumnIfMissing(
+                    db,
+                    "punch_records",
+                    "punch_state",
+                    "TEXT NOT NULL DEFAULT 'ACCEPTED'");
+            db.execSQL(
+                    "UPDATE punch_records SET punch_state=CASE " +
+                            "WHEN is_synced=1 THEN ? ELSE ? END",
+                    new Object[]{
+                            PunchRecord.STATE_SYNCED,
+                            PunchRecord.STATE_ACCEPTED
+                    });
+            createPunchRecordIndexes(db);
+        }
     }
 
     public int getOrCreateFaceSdkId(String employeeId) {
@@ -1027,13 +1042,53 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
 
     public boolean insertPunchRecord(PunchRecord r) {
+        return r != null && insertPunchRecord(getWritableDatabase(), r) != -1L;
+    }
+
+    /**
+     * Atomic local boundary used before any server acceptance request.
+     * Either both the punch intent and its durable work item exist, or neither exists.
+     */
+    public boolean insertPunchRecordAndEnqueue(PunchRecord r, String action) {
+        if (r == null || action == null || action.trim().isEmpty()) {
+            return false;
+        }
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            if (insertPunchRecord(db, r) == -1L) {
+                return false;
+            }
+            if (!enqueueSyncItem(db, r.clientRecordId, action)) {
+                return false;
+            }
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    private long insertPunchRecord(SQLiteDatabase db, PunchRecord r) {
+        ContentValues v = punchValues(r);
+        return db.insertWithOnConflict(
+                "punch_records", null, v, SQLiteDatabase.CONFLICT_IGNORE);
+    }
+
+    private ContentValues punchValues(PunchRecord r) {
         ContentValues v = new ContentValues();
-        v.put("id", r.id); v.put("client_record_id", r.clientRecordId);
-        v.put("emp_id", r.empId); v.put("emp_name", r.empName); v.put("dept", r.dept);
-        v.put("punch_time", r.punchTime); v.put("punch_date", r.punchDate);
+        v.put("id", r.id);
+        v.put("client_record_id", r.clientRecordId);
+        v.put("emp_id", r.empId);
+        v.put("emp_name", r.empName);
+        v.put("dept", r.dept);
+        v.put("punch_time", r.punchTime);
+        v.put("punch_date", r.punchDate);
         v.put("punch_type", r.punchType);
-        v.put("shift_name", r.shiftName); v.put("line_code", r.lineCode);
-        v.put("team_binding_id", r.teamBindingId); v.put("clock_index", r.clockIndex);
+        v.put("shift_name", r.shiftName);
+        v.put("line_code", r.lineCode);
+        v.put("team_binding_id", r.teamBindingId);
+        v.put("clock_index", r.clockIndex);
         v.put("match_score", r.matchScore);
         v.put("snap_image_path", r.snapImagePath);
         v.put("snap_image_mime_type", r.snapImageMimeType);
@@ -1042,17 +1097,21 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         v.put("snap_image_size", r.snapImageSize);
         v.put("snap_captured_at", r.snapCapturedAt);
         v.put("is_synced", r.isSynced);
-        long result = getWritableDatabase().insertWithOnConflict("punch_records", null, v,
-                SQLiteDatabase.CONFLICT_IGNORE);
-        return result != -1;
+        String state = r.punchState == null || r.punchState.trim().isEmpty()
+                ? (r.isSynced == 1 ? PunchRecord.STATE_SYNCED : PunchRecord.STATE_ACCEPTED)
+                : r.punchState.trim();
+        v.put("punch_state", state);
+        return v;
     }
 
 
     public List<PunchRecord> getPunchRecordsByDate(String date, String lineCode) {
         List<PunchRecord> list = new ArrayList<>();
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT * FROM punch_records WHERE punch_date=? AND line_code=? ORDER BY punch_time DESC",
-                new String[]{date, lineCode});
+                "SELECT * FROM punch_records " +
+                        "WHERE punch_date=? AND line_code=? AND punch_state<>? " +
+                        "ORDER BY punch_time DESC",
+                new String[]{date, lineCode, PunchRecord.STATE_ACCEPTING});
         try { while (c.moveToNext()) list.add(mapPunch(c)); }
         finally { c.close(); }
         return list;
@@ -1062,7 +1121,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     public List<PunchRecord> getUnsyncedPunchRecords() {
         List<PunchRecord> list = new ArrayList<>();
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT * FROM punch_records WHERE is_synced=0 ORDER BY punch_time ASC", null);
+                "SELECT * FROM punch_records WHERE is_synced=0 " +
+                        "AND punch_state IN (?, ?) ORDER BY punch_time ASC",
+                new String[]{PunchRecord.STATE_ACCEPTED, PunchRecord.STATE_UPLOADING});
         try { while (c.moveToNext()) list.add(mapPunch(c)); }
         finally { c.close(); }
         return list;
@@ -1070,8 +1131,13 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
     public PunchRecord getUnsyncedPunchRecord(String clientRecordId) {
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT * FROM punch_records WHERE client_record_id=? AND is_synced=0",
-                new String[]{clientRecordId});
+                "SELECT * FROM punch_records WHERE client_record_id=? AND is_synced=0 " +
+                        "AND punch_state IN (?, ?)",
+                new String[]{
+                        clientRecordId,
+                        PunchRecord.STATE_ACCEPTED,
+                        PunchRecord.STATE_UPLOADING
+                });
         try {
             return c.moveToFirst() ? mapPunch(c) : null;
         } finally {
@@ -1080,9 +1146,145 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     }
 
 
+    public PunchRecord getPunchRecord(String clientRecordId) {
+        if (clientRecordId == null || clientRecordId.trim().isEmpty()) {
+            return null;
+        }
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT * FROM punch_records WHERE client_record_id=? LIMIT 1",
+                new String[]{clientRecordId.trim()});
+        try {
+            return c.moveToFirst() ? mapPunch(c) : null;
+        } finally {
+            c.close();
+        }
+    }
+
+    public boolean hasPendingPunchAcceptanceForEmployee(String empId) {
+        if (empId == null || empId.trim().isEmpty()) {
+            return false;
+        }
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT 1 FROM punch_records " +
+                        "WHERE emp_id=? AND punch_state=? AND is_synced=0 LIMIT 1",
+                new String[]{empId.trim(), PunchRecord.STATE_ACCEPTING});
+        try {
+            return c.moveToFirst();
+        } finally {
+            c.close();
+        }
+    }
+
+    public boolean markPunchAcceptedAndQueueUpload(String clientRecordId) {
+        if (clientRecordId == null || clientRecordId.trim().isEmpty()) {
+            return false;
+        }
+        String recordId = clientRecordId.trim();
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            Cursor c = db.rawQuery(
+                    "SELECT punch_state, is_synced FROM punch_records " +
+                            "WHERE client_record_id=? LIMIT 1",
+                    new String[]{recordId});
+            String state;
+            int synced;
+            try {
+                if (!c.moveToFirst()) {
+                    return false;
+                }
+                state = c.getString(0);
+                synced = c.getInt(1);
+            } finally {
+                c.close();
+            }
+
+            db.delete(
+                    "sync_queue",
+                    "action=? AND record_id=?",
+                    new String[]{Constants.ACTION_PUNCH_ACCEPT, recordId});
+
+            if (synced == 1 || PunchRecord.STATE_SYNCED.equals(state)) {
+                db.setTransactionSuccessful();
+                return true;
+            }
+
+            ContentValues values = new ContentValues();
+            values.put("punch_state", PunchRecord.STATE_ACCEPTED);
+            values.put("is_synced", 0);
+            db.update(
+                    "punch_records",
+                    values,
+                    "client_record_id=?",
+                    new String[]{recordId});
+
+            if (!enqueueSyncItem(db, recordId, Constants.ACTION_PUNCH_PUSH)) {
+                return false;
+            }
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public boolean markPunchUploading(String clientRecordId) {
+        if (clientRecordId == null || clientRecordId.trim().isEmpty()) {
+            return false;
+        }
+        ContentValues values = new ContentValues();
+        values.put("punch_state", PunchRecord.STATE_UPLOADING);
+        return getWritableDatabase().update(
+                "punch_records",
+                values,
+                "client_record_id=? AND is_synced=0 AND punch_state=?",
+                new String[]{
+                        clientRecordId.trim(),
+                        PunchRecord.STATE_ACCEPTED
+                }) > 0;
+    }
+
+    public void markPunchUploadPending(String clientRecordId) {
+        if (clientRecordId == null || clientRecordId.trim().isEmpty()) {
+            return;
+        }
+        ContentValues values = new ContentValues();
+        values.put("punch_state", PunchRecord.STATE_ACCEPTED);
+        getWritableDatabase().update(
+                "punch_records",
+                values,
+                "client_record_id=? AND is_synced=0 AND punch_state=?",
+                new String[]{
+                        clientRecordId.trim(),
+                        PunchRecord.STATE_UPLOADING
+                });
+    }
+
+    public boolean discardPunchIntent(String clientRecordId) {
+        if (clientRecordId == null || clientRecordId.trim().isEmpty()) {
+            return false;
+        }
+        String recordId = clientRecordId.trim();
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.delete("sync_queue", "record_id=?", new String[]{recordId});
+            int deleted = db.delete(
+                    "punch_records",
+                    "client_record_id=? AND punch_state=?",
+                    new String[]{recordId, PunchRecord.STATE_ACCEPTING});
+            db.setTransactionSuccessful();
+            return deleted > 0;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+
     public void markPunchSynced(String id) {
         ContentValues v = new ContentValues();
         v.put("is_synced", 1);
+        v.put("punch_state", PunchRecord.STATE_SYNCED);
         getWritableDatabase().update("punch_records", v, "id=?", new String[]{id});
     }
 
@@ -1109,21 +1311,47 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         r.snapImageSize = c.getLong(c.getColumnIndexOrThrow("snap_image_size"));
         r.snapCapturedAt = c.getLong(c.getColumnIndexOrThrow("snap_captured_at"));
         r.isSynced = c.getInt(c.getColumnIndexOrThrow("is_synced"));
+        r.punchState = c.getString(c.getColumnIndexOrThrow("punch_state"));
         return r;
     }
 
 
     public void enqueueSyncItem(String recordId, String action) {
+        enqueueSyncItem(getWritableDatabase(), recordId, action);
+    }
+
+    private boolean enqueueSyncItem(SQLiteDatabase db, String recordId, String action) {
+        if (db == null || recordId == null || recordId.trim().isEmpty()
+                || action == null || action.trim().isEmpty()) {
+            return false;
+        }
         ContentValues v = new ContentValues();
-        v.put("record_id", recordId); v.put("action", action);
-        v.put("retry_count", 0); v.put("created_at", System.currentTimeMillis() / 1000);
-        getWritableDatabase().insertWithOnConflict("sync_queue", null, v,
-                SQLiteDatabase.CONFLICT_IGNORE);
+        v.put("record_id", recordId.trim());
+        v.put("action", action.trim());
+        v.put("retry_count", 0);
+        v.put("created_at", System.currentTimeMillis() / 1000);
+        long inserted = db.insertWithOnConflict(
+                "sync_queue", null, v, SQLiteDatabase.CONFLICT_IGNORE);
+        if (inserted != -1L) {
+            return true;
+        }
+        Cursor c = db.rawQuery(
+                "SELECT 1 FROM sync_queue WHERE action=? AND record_id=? LIMIT 1",
+                new String[]{action.trim(), recordId.trim()});
+        try {
+            return c.moveToFirst();
+        } finally {
+            c.close();
+        }
     }
 
 
     public List<SyncQueueItem> getSyncQueue(String action) {
         return querySyncQueue(action, null, 0);
+    }
+
+    public List<SyncQueueItem> getSyncQueue(String action, int limit) {
+        return querySyncQueue(action, null, limit);
     }
 
     public List<SyncQueueItem> getRetryableSyncQueue(String action, int maxRetries, int limit) {
@@ -1187,14 +1415,57 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
     public int repairPunchSyncQueue() {
         int missingCount = countMissingPunchSyncQueueItems();
-        if (missingCount <= 0) {
-            return 0;
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ContentValues pending = new ContentValues();
+            pending.put("punch_state", PunchRecord.STATE_ACCEPTED);
+            db.update(
+                    "punch_records",
+                    pending,
+                    "is_synced=0 AND punch_state=?",
+                    new String[]{PunchRecord.STATE_UPLOADING});
+
+            db.execSQL(
+                    "DELETE FROM sync_queue WHERE action=? AND EXISTS (" +
+                            "SELECT 1 FROM punch_records p " +
+                            "WHERE p.client_record_id=sync_queue.record_id " +
+                            "AND p.punch_state=?)",
+                    new Object[]{Constants.ACTION_PUNCH_PUSH, PunchRecord.STATE_ACCEPTING});
+            db.execSQL(
+                    "DELETE FROM sync_queue WHERE action=? AND EXISTS (" +
+                            "SELECT 1 FROM punch_records p " +
+                            "WHERE p.client_record_id=sync_queue.record_id " +
+                            "AND p.punch_state<>?)",
+                    new Object[]{Constants.ACTION_PUNCH_ACCEPT, PunchRecord.STATE_ACCEPTING});
+
+            long nowSeconds = System.currentTimeMillis() / 1000L;
+            db.execSQL(
+                    "INSERT OR IGNORE INTO sync_queue " +
+                            "(record_id, action, retry_count, created_at, last_retry) " +
+                            "SELECT client_record_id, ?, 0, ?, NULL FROM punch_records " +
+                            "WHERE is_synced=0 AND punch_state=? " +
+                            "AND client_record_id IS NOT NULL AND TRIM(client_record_id)<>''",
+                    new Object[]{
+                            Constants.ACTION_PUNCH_ACCEPT,
+                            nowSeconds,
+                            PunchRecord.STATE_ACCEPTING
+                    });
+            db.execSQL(
+                    "INSERT OR IGNORE INTO sync_queue " +
+                            "(record_id, action, retry_count, created_at, last_retry) " +
+                            "SELECT client_record_id, ?, 0, ?, NULL FROM punch_records " +
+                            "WHERE is_synced=0 AND punch_state=? " +
+                            "AND client_record_id IS NOT NULL AND TRIM(client_record_id)<>''",
+                    new Object[]{
+                            Constants.ACTION_PUNCH_PUSH,
+                            nowSeconds,
+                            PunchRecord.STATE_ACCEPTED
+                    });
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
         }
-        getWritableDatabase().execSQL(
-                "INSERT OR IGNORE INTO sync_queue (record_id, action, retry_count, created_at, last_retry) " +
-                        "SELECT client_record_id, ?, 0, ?, NULL FROM punch_records " +
-                        "WHERE is_synced=0 AND client_record_id IS NOT NULL AND TRIM(client_record_id)<>''",
-                new Object[]{Constants.ACTION_PUNCH_PUSH, System.currentTimeMillis() / 1000});
         return missingCount;
     }
 
@@ -1255,16 +1526,46 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     }
 
     private int countMissingPunchSyncQueueItems() {
-        Cursor c = getReadableDatabase().rawQuery(
+        int count = 0;
+        Cursor accepting = getReadableDatabase().rawQuery(
                 "SELECT COUNT(*) FROM punch_records p " +
-                        "WHERE p.is_synced=0 " +
+                        "WHERE p.is_synced=0 AND p.punch_state=? " +
                         "AND p.client_record_id IS NOT NULL AND TRIM(p.client_record_id)<>'' " +
                         "AND NOT EXISTS (" +
                         "SELECT 1 FROM sync_queue q " +
                         "WHERE q.action=? AND q.record_id=p.client_record_id)",
-                new String[]{Constants.ACTION_PUNCH_PUSH});
-        try { return c.moveToFirst() ? c.getInt(0) : 0; }
-        finally { c.close(); }
+                new String[]{
+                        PunchRecord.STATE_ACCEPTING,
+                        Constants.ACTION_PUNCH_ACCEPT
+                });
+        try {
+            if (accepting.moveToFirst()) {
+                count += accepting.getInt(0);
+            }
+        } finally {
+            accepting.close();
+        }
+
+        Cursor accepted = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM punch_records p " +
+                        "WHERE p.is_synced=0 AND p.punch_state IN (?, ?) " +
+                        "AND p.client_record_id IS NOT NULL AND TRIM(p.client_record_id)<>'' " +
+                        "AND NOT EXISTS (" +
+                        "SELECT 1 FROM sync_queue q " +
+                        "WHERE q.action=? AND q.record_id=p.client_record_id)",
+                new String[]{
+                        PunchRecord.STATE_ACCEPTED,
+                        PunchRecord.STATE_UPLOADING,
+                        Constants.ACTION_PUNCH_PUSH
+                });
+        try {
+            if (accepted.moveToFirst()) {
+                count += accepted.getInt(0);
+            }
+        } finally {
+            accepted.close();
+        }
+        return count;
     }
 
     private int countLimitedPunchSyncQueueItems() {
@@ -1283,8 +1584,15 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         List<String> ids = new ArrayList<>();
         Cursor c = getReadableDatabase().rawQuery(
                 "SELECT DISTINCT emp_id FROM punch_records " +
-                        "WHERE punch_date=? AND line_code=? AND team_binding_id=? AND clock_index=?",
-                new String[]{date, lineCode, String.valueOf(teamBindingId), String.valueOf(clockIndex)});
+                        "WHERE punch_date=? AND line_code=? AND team_binding_id=? AND clock_index=? " +
+                        "AND punch_state<>?",
+                new String[]{
+                        date,
+                        lineCode,
+                        String.valueOf(teamBindingId),
+                        String.valueOf(clockIndex),
+                        PunchRecord.STATE_ACCEPTING
+                });
         try { while (c.moveToNext()) ids.add(c.getString(0)); }
         finally { c.close(); }
         return ids;
@@ -1302,12 +1610,14 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                 "snap_image_path TEXT, snap_image_mime_type TEXT DEFAULT 'image/jpeg', " +
                 "snap_image_width INTEGER DEFAULT 0, snap_image_height INTEGER DEFAULT 0, " +
                 "snap_image_size INTEGER DEFAULT 0, snap_captured_at INTEGER DEFAULT 0, " +
-                "is_synced INTEGER DEFAULT 0)");
+                "is_synced INTEGER DEFAULT 0, " +
+                "punch_state TEXT NOT NULL DEFAULT 'ACCEPTED')");
     }
 
     private void createPunchRecordIndexes(SQLiteDatabase db) {
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_punch_date ON punch_records(punch_date)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_punch_sync ON punch_records(is_synced)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_punch_state ON punch_records(punch_state)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_punch_limit " +
                 "ON punch_records(punch_date, line_code, team_binding_id, clock_index, emp_id)");
     }
