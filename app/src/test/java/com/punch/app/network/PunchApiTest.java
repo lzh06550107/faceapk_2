@@ -18,6 +18,17 @@ import okhttp3.Request;
 
 public class PunchApiTest extends ApiTestSupport {
 
+    @Test
+    public void pushPunch_shouldFailWhenClientRecordIdMissing() {
+        PunchRecord punch = new PunchRecord();
+        punch.teamBindingId = 2;
+
+        ApiResult<PunchDto.PunchPushData> result = ApiService.pushPunch(punch);
+
+        assertFalse(result.success);
+        assertEquals(400, result.code);
+    }
+
 
     @Test
     public void acceptLinePunch_shouldSendMinimalAcceptancePayloadAndParseAllowed() throws Exception {
@@ -81,6 +92,7 @@ public class PunchApiTest extends ApiTestSupport {
     @Test
     public void pushPunch_shouldFailWhenTeamBindingMissing() {
         PunchRecord punch = new PunchRecord();
+        punch.clientRecordId = "PDEVICE001_01KXYZ";
         punch.empId = "pnFNxH";
         punch.lineCode = "PKZ450";
         punch.punchTime = 1782424800L;
@@ -148,6 +160,7 @@ public class PunchApiTest extends ApiTestSupport {
         Files.write(tempFile.toPath(), "snapshot".getBytes(StandardCharsets.UTF_8));
 
         PunchRecord punch = new PunchRecord();
+        punch.clientRecordId = "PDEVICE001_01KXYZ";
         punch.empId = "pnFNxH";
         punch.lineCode = "PKZ450";
         punch.punchTime = 1782424800L;
