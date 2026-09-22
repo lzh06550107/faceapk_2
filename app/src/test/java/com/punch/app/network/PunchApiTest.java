@@ -18,6 +18,66 @@ import okhttp3.Request;
 
 public class PunchApiTest extends ApiTestSupport {
 
+
+    @Test
+    public void acceptLinePunch_shouldSendMinimalAcceptancePayloadAndParseAllowed() throws Exception {
+        SessionManager.get().saveToken("token-abc", 1893456000L);
+        interceptor.enqueueJson(200, successEnvelope("{\"is_over_capacity\":false}"));
+
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                1782424800L
+        );
+
+        assertTrue(result.success);
+        assertFalse(result.data.isOverCapacity);
+
+        Request request = interceptor.takeRequest();
+        assertEquals("/v3/handheld/line/isOverCapacity", request.url().encodedPath());
+        assertEquals("Bearer token-abc", request.header("Authorization"));
+        String body = interceptor.takeBody();
+        assertTrue(body.contains("\"client_record_id\":\"PDEVICE001_01KXYZ\""));
+        assertTrue(body.contains("\"numbers\":\"EMP001\""));
+        assertTrue(body.contains("\"line_binding_code\":\"LINE01\""));
+        assertTrue(body.contains("\"punch_time\":1782424800"));
+        assertTrue(body.contains("\"token\":\"token-abc\""));
+        assertFalse(body.contains("\"team_binding\""));
+        assertFalse(body.contains("\"snap_image\""));
+    }
+
+    @Test
+    public void acceptLinePunch_shouldParseOverCapacity() {
+        SessionManager.get().saveToken("token-abc", 1893456000L);
+        interceptor.enqueueJson(200, successEnvelope("{\"is_over_capacity\":true}"));
+
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                1782424800L
+        );
+
+        assertTrue(result.success);
+        assertTrue(result.data.isOverCapacity);
+    }
+
+    @Test
+    public void acceptLinePunch_shouldFailWhenResponseMissingCapacityFlag() {
+        SessionManager.get().saveToken("token-abc", 1893456000L);
+        interceptor.enqueueJson(200, successEnvelope("{}"));
+
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                1782424800L
+        );
+
+        assertFalse(result.success);
+    }
+
     @Test
     public void pushPunch_shouldFailWhenTeamBindingMissing() {
         PunchRecord punch = new PunchRecord();
@@ -65,6 +125,7 @@ public class PunchApiTest extends ApiTestSupport {
         assertTrue(body.contains("\"team_binding\":2"));
         assertTrue(body.contains("\"line_binding_code\":\"PKZ450\""));
         assertTrue(body.contains("\"snap_time\":1782424800"));
+        assertFalse(body.contains("\"client_record_id\""));
     }
 
     @Test
