@@ -1826,29 +1826,59 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private void savePunchAndSync(PunchRecord record) {
         boolean inserted = PunchPersistence.persist(
                 requireContext(), record, Constants.ACTION_PUNCH_PUSH);
-        if (!inserted) {
-            Employee employee = DatabaseHelper.get(requireContext()).getEmployee(record.empId);
-            postToActiveView(() -> {
-                String statusMessage = buildEmployeeStatusMessage(
-                        record.empName,
-                        record.empId,
-                        "\u6253\u5361\u5931\u8d25",
-                        "\u6253\u5361\u8bb0\u5f55\u5df2\u5b58\u5728"
-                );
-                playFailFeedback(buildPunchFailureSpeech(record.empName, record.empId, "\u6253\u5361\u8bb0\u5f55\u5df2\u5b58\u5728"));
-                showResultCard(
-                        statusMessage,
-                        buildEmployeeResultMessage(record.empName, record.empId, "\u6253\u5361\u5931\u8d25", "\u6253\u5361\u8bb0\u5f55\u5df2\u5b58\u5728"),
-                        false,
-                        getEmployeeDisplayName(record.empName, record.empId),
-                        record.snapImagePath,
-                        employee != null ? employee.faceImageUrl : null,
-                        record.snapImagePath
-                );
-            });
+        if (inserted) {
+            postToActiveView(() -> showPunchResult(record, false, true));
             return;
         }
-        postToActiveView(() -> showPunchResult(record, false, true));
+
+        DatabaseHelper db = DatabaseHelper.get(requireContext());
+        PunchRecord existing = db.getUnsyncedPunchRecord(record.clientRecordId);
+        if (existing != null) {
+            if (!safeString(record.snapImagePath).equals(safeString(existing.snapImagePath))) {
+                PunchSnapshotHelper.deleteSnapshot(record.snapImagePath);
+            }
+            postToActiveView(() -> showPunchResult(existing, false, true));
+            return;
+        }
+
+        AppLogger.w(TAG, "Server accepted punch but local persistence failed: clientRecordId="
+                + safeString(record.clientRecordId));
+        InteractionLogger.logBusinessFailure(
+                InteractionLogger.GROUP_PUNCH,
+                "本地打卡资料保存失败",
+                "client_record_id=" + safeString(record.clientRecordId)
+                        + "\nemployee=" + safeString(record.empId)
+        );
+        postToActiveView(() -> showAcceptedPunchPersistenceFailure(record));
+    }
+
+    private void showAcceptedPunchPersistenceFailure(PunchRecord record) {
+        String timeStr = new SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                .format(new Date(record.punchTime * 1000L));
+        Employee employee = DatabaseHelper.get(requireContext()).getEmployee(record.empId);
+        String statusMessage = buildEmployeeStatusMessage(
+                record.empName,
+                record.empId,
+                "打卡成功",
+                null
+        );
+        String resultMessage = buildEmployeeResultMessage(
+                record.empName,
+                record.empId,
+                "打卡成功",
+                "打卡 " + timeStr + "\n服务器已受理，资料保存异常"
+        );
+        showResultCard(
+                statusMessage,
+                resultMessage,
+                true,
+                getEmployeeDisplayName(record.empName, record.empId),
+                record.snapImagePath,
+                employee != null ? employee.faceImageUrl : null,
+                record.snapImagePath,
+                getSuccessResultDisplayMs()
+        );
+        playPunchFeedback(record);
     }
 
     private boolean isBlank(String value) {
