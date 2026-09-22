@@ -106,6 +106,7 @@ public class PunchApiTest extends ApiTestSupport {
         ));
 
         PunchRecord punch = new PunchRecord();
+        punch.clientRecordId = "PDEVICE001_01KXYZ";
         punch.empId = "pnFNxH";
         punch.lineCode = "PKZ450";
         punch.punchTime = 1782424800L;
@@ -125,7 +126,7 @@ public class PunchApiTest extends ApiTestSupport {
         assertTrue(body.contains("\"team_binding\":2"));
         assertTrue(body.contains("\"line_binding_code\":\"PKZ450\""));
         assertTrue(body.contains("\"snap_time\":1782424800"));
-        assertFalse(body.contains("\"client_record_id\""));
+        assertTrue(body.contains("\"client_record_id\":\"PDEVICE001_01KXYZ\""));
     }
 
     @Test
