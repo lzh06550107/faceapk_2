@@ -30,6 +30,7 @@ import okio.ByteString;
 
 public final class ApiService {
     private static final int EMPLOYEE_SYNC_PAGE_SIZE = 200;
+    private static final int PUNCH_ACCEPT_MAX_ATTEMPTS = 2;
     private static final String TAG = "ApiService";
 
     private ApiService() {
@@ -136,7 +137,19 @@ public final class ApiService {
         body.put("line_binding_code", lineBindingCode.trim());
         body.put("punch_time", punchTime);
         body.put("token", token);
-        return parseLineCapacity(ApiClient.post(ApiEndpoints.LINE_IS_OVER_CAPACITY, body));
+
+        ApiResponse response = null;
+        for (int attempt = 1; attempt <= PUNCH_ACCEPT_MAX_ATTEMPTS; attempt++) {
+            response = ApiClient.post(ApiEndpoints.LINE_IS_OVER_CAPACITY, body);
+            if (response == null || response.success || response.code != -1) {
+                break;
+            }
+            if (attempt < PUNCH_ACCEPT_MAX_ATTEMPTS) {
+                AppLogger.w(TAG, "Punch acceptance transport failed; retrying with same client_record_id="
+                        + clientRecordId.trim());
+            }
+        }
+        return parseLineCapacity(response);
     }
 
     public static ApiResult<PunchDto.PunchPushData> pushPunch(PunchRecord punch) {
