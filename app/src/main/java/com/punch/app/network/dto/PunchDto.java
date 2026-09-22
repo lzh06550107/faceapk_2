@@ -4,6 +4,10 @@ public final class PunchDto {
     private PunchDto() {
     }
 
+    public static final class LineCapacityData {
+        public boolean isOverCapacity;
+    }
+
     public static final class PunchPushData {
         public String recordId = "";
         public long snapTime;
