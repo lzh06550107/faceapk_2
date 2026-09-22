@@ -70,6 +70,13 @@ public class ApiClient {
         return execute(request);
     }
 
+    public static ApiResponse post(String path, Object body, long callTimeoutMillis) {
+        String json = GSON.toJson(body);
+        RequestBody rb = RequestBody.create(json, JSON);
+        Request request = buildRequest(path, rb);
+        return execute(request, callTimeoutMillis);
+    }
+
     public static ApiResponse postForm(String path, Map<String, Object> body) {
         FormBody.Builder builder = new FormBody.Builder();
         if (body != null) {
@@ -159,8 +166,16 @@ public class ApiClient {
     }
 
     private static ApiResponse execute(Request request) {
+        return execute(request, 0L);
+    }
+
+    private static ApiResponse execute(Request request, long callTimeoutMillis) {
         long startedAt = System.currentTimeMillis();
-        try (Response response = getClient().newCall(request).execute()) {
+        okhttp3.Call call = getClient().newCall(request);
+        if (callTimeoutMillis > 0L) {
+            call.timeout().timeout(callTimeoutMillis, TimeUnit.MILLISECONDS);
+        }
+        try (Response response = call.execute()) {
             String bodyStr = response.body() != null ? response.body().string() : "{}";
             JsonObject obj = parseJsonObject(bodyStr);
             int backendCode = extractCode(obj, response.code());
