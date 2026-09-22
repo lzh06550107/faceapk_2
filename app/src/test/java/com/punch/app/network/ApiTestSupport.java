@@ -12,7 +12,9 @@ import org.junit.Before;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -85,6 +87,7 @@ abstract class ApiTestSupport {
 
     protected static final class RecordingInterceptor implements Interceptor {
         private final Deque<QueuedResponse> responses = new ArrayDeque<>();
+        private final List<String> requestBodies = new ArrayList<>();
         private Request lastRequest;
         private String lastBody = "";
         private int requestCount;
@@ -99,6 +102,10 @@ abstract class ApiTestSupport {
 
         int getRequestCount() {
             return requestCount;
+        }
+
+        String getRequestBody(int index) {
+            return requestBodies.get(index);
         }
 
         Request takeRequest() {
@@ -120,6 +127,7 @@ abstract class ApiTestSupport {
             } else {
                 lastBody = "";
             }
+            requestBodies.add(lastBody);
 
             QueuedResponse queued = responses.removeFirst();
             if (queued.failure != null) {
