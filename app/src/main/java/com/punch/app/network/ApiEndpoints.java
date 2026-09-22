@@ -13,6 +13,7 @@ public final class ApiEndpoints {
     public static final String EVENT_RESULT = HANDHELD + "/event/result";
     public static final String EMPLOYEE_SYNC = HANDHELD + "/employee/sync";
     public static final String PUNCH = HANDHELD + "/clock/upload";
+    public static final String LINE_IS_OVER_CAPACITY = HANDHELD + "/line/isOverCapacity";
     public static final String PUNCH_STATISTICS = HANDHELD + "/clock/statistics";
     public static final String HEALTH = HANDHELD + "/health";
 
