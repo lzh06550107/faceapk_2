@@ -35,6 +35,29 @@ public class PunchEmployeeEligibilityTest {
         assertFalse(PunchEmployeeEligibility.isEligible(null));
     }
 
+    @Test public void faceAuthorizationRequiresDurableCurrentRegistration() {
+        Employee e = employee();
+        e.faceRegistered = 1;
+        assertTrue(PunchEmployeeEligibility.isFaceAuthorizationCurrent(e, false));
+
+        e.faceRegistered = 0;
+        assertFalse(PunchEmployeeEligibility.isFaceAuthorizationCurrent(e, false));
+
+        e.faceRegistered = 1;
+        assertFalse(PunchEmployeeEligibility.isFaceAuthorizationCurrent(e, true));
+    }
+
+    @Test public void deletedOrDisabledDesiredFaceCannotAuthorizeStaleRuntimeMatch() {
+        Employee e = employee();
+        e.faceRegistered = 1;
+        e.isDeleted = 1;
+        assertFalse(PunchEmployeeEligibility.isFaceAuthorizationCurrent(e, false));
+
+        e.isDeleted = 0;
+        e.faceStatus = "disabled";
+        assertFalse(PunchEmployeeEligibility.isFaceAuthorizationCurrent(e, false));
+    }
+
     private Employee employee() {
         Employee e = new Employee();
         e.id = "E1";

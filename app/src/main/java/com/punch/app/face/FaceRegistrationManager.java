@@ -113,7 +113,7 @@ public class FaceRegistrationManager {
             return PreparedFaceResult.fail(emp.id, FAIL_MSG_FACE_IMAGE_URL_EMPTY);
         }
         FaceFileManager.DownloadResult downloadResult = FaceFileManager.downloadAndVerify(
-                ctx, emp.id, emp.faceImageUrl, emp.faceImageSha256);
+                ctx, emp.id, emp.faceVersion, emp.faceImageUrl, emp.faceImageSha256);
         if (!downloadResult.success) {
             String failMsg = downloadResult.failMsg == null || downloadResult.failMsg.trim().isEmpty()
                     ? FAIL_MSG_FACE_IMAGE_DOWNLOAD_FAILED
@@ -168,6 +168,7 @@ public class FaceRegistrationManager {
         FaceFileManager.DownloadResult downloadResult = FaceFileManager.downloadAndVerify(
                 ctx,
                 emp.id,
+                emp.faceVersion,
                 emp.faceImageUrl,
                 emp.faceImageSha256
         );

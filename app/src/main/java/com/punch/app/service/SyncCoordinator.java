@@ -5,6 +5,7 @@ import android.content.Context;
 import com.punch.app.PunchApplication;
 import com.punch.app.db.DatabaseHelper;
 import com.punch.app.face.FaceApplyWorker;
+import com.punch.app.face.FaceFileManager;
 import com.punch.app.face.FaceManager;
 import com.punch.app.face.FaceRegistrationManager;
 import com.punch.app.model.Employee;
@@ -45,6 +46,8 @@ public final class SyncCoordinator {
     private static final long SYNCED_SNAPSHOT_CLEANUP_DELAY_MS = 5000L;
     private static final int FACE_APPLY_BACKLOG_HIGH_WATERMARK = 500;
     private static final int FACE_APPLY_BACKLOG_LOW_WATERMARK = 200;
+    private static final long FACE_APPLY_BACKPRESSURE_WAIT_MS = 250L;
+    private static final long FACE_APPLY_BACKPRESSURE_MAX_WAIT_MS = 30_000L;
     private static final String FAILURE_MSG_EMPLOYEE_SYNC_FAILED = "员工同步失败";
     private static final String FAILURE_MSG_FACE_SDK_NOT_READY = "人脸引擎未就绪";
     private static final String FAILURE_MSG_FACE_REGISTRATION_INCOMPLETE = "人脸注册未完成";
@@ -57,6 +60,8 @@ public final class SyncCoordinator {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService punchSyncExecutor = Executors.newSingleThreadExecutor();
+    private final PlatformEventExecutor platformEventExecutor =
+            new PlatformEventExecutor("platform-event-executor");
     private final ScheduledExecutorService snapshotCleanupExecutor = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean heartbeatQueued = new AtomicBoolean(false);
     private final AtomicBoolean punchSyncQueued = new AtomicBoolean(false);
@@ -192,49 +197,69 @@ public final class SyncCoordinator {
 
             InteractionLogger.logBusiness(
                     resolveEventGroup(event.eventType),
-                    "开始处理平台事件",
-                    "cursor=" + event.cursor + "\nevent_type=" + safeString(event.eventType)
+                    "平台事件已进入独立执行队列",
+                    "cursor=" + event.cursor + "\\nevent_type=" + safeString(event.eventType)
             );
-            if ("person_changed".equals(safeString(event.eventType))) {
-                if (!syncEmployeesEventInBatches(appContext, event)) {
-                    break;
-                }
-                continue;
-            }
-
-            EventProcessingOutcome outcome = handleEvent(appContext, event);
-
-            ApiResult<Void> ackResult = ApiService.reportEventResult(
+            PlatformEventExecutor.SubmitResult submitResult = platformEventExecutor.submit(
                     event.cursor,
-                    event.eventType,
-                    outcome.success,
-                    outcome.employeeResults,
-                    outcome.failureMessage
+                    () -> preparePlatformEventAck(appContext, event)
             );
-            if (!ackResult.success) {
-                AppLogger.w(TAG, "Event result report failed: " + ackResult.message + ", cursor=" + event.cursor);
-                InteractionLogger.logBusinessFailure(
-                        InteractionLogger.GROUP_EVENT_RESULT,
-                        "事件结果回传失败",
-                        "cursor=" + event.cursor + "\nreason=" + safeString(ackResult.message)
-                );
-                break;
-            }
-            InteractionLogger.logBusiness(
-                    InteractionLogger.GROUP_EVENT_RESULT,
-                    "事件结果已回传",
-                    "cursor=" + event.cursor + "\nsuccess=" + outcome.success
-            );
-            if (!outcome.success) {
-                AppLogger.w(TAG, "Event handled with failure: cursor=" + event.cursor + ", reason=" + outcome.failureMessage);
-                InteractionLogger.logBusinessFailure(
-                        resolveEventGroup(event.eventType),
-                        "平台事件处理失败",
-                        "cursor=" + event.cursor + "\nreason=" + safeString(outcome.failureMessage)
-                );
-                break;
-            }
+            AppLogger.d(TAG, "Platform event submit: cursor=" + event.cursor
+                    + " result=" + submitResult.name());
         }
+    }
+
+    private PlatformEventExecutor.AckWork preparePlatformEventAck(
+            Context appContext,
+            HeartbeatDto.HeartbeatEventData event) {
+        InteractionLogger.logBusiness(
+                resolveEventGroup(event.eventType),
+                "开始处理平台事件",
+                "cursor=" + event.cursor + "\\nevent_type=" + safeString(event.eventType)
+        );
+
+        if ("person_changed".equals(safeString(event.eventType))) {
+            return processEmployeesEventInBatches(appContext, event);
+        }
+
+        EventProcessingOutcome outcome = handleEvent(appContext, event);
+        if (!outcome.success) {
+            AppLogger.w(TAG, "Event handled with failure: cursor=" + event.cursor
+                    + ", reason=" + outcome.failureMessage);
+            InteractionLogger.logBusinessFailure(
+                    resolveEventGroup(event.eventType),
+                    "平台事件处理失败",
+                    "cursor=" + event.cursor + "\\nreason=" + safeString(outcome.failureMessage)
+            );
+        }
+        return () -> reportPlatformEventAck(event, outcome);
+    }
+
+    private boolean reportPlatformEventAck(HeartbeatDto.HeartbeatEventData event,
+                                           EventProcessingOutcome outcome) {
+        ApiResult<Void> ackResult = ApiService.reportEventResult(
+                event.cursor,
+                event.eventType,
+                outcome.success,
+                outcome.employeeResults,
+                outcome.failureMessage
+        );
+        if (!ackResult.success) {
+            AppLogger.w(TAG, "Event result report failed: " + ackResult.message
+                    + ", cursor=" + event.cursor);
+            InteractionLogger.logBusinessFailure(
+                    InteractionLogger.GROUP_EVENT_RESULT,
+                    "事件结果回传失败",
+                    "cursor=" + event.cursor + "\\nreason=" + safeString(ackResult.message)
+            );
+            return false;
+        }
+        InteractionLogger.logBusiness(
+                InteractionLogger.GROUP_EVENT_RESULT,
+                "事件结果已回传",
+                "cursor=" + event.cursor + "\\nsuccess=" + outcome.success
+        );
+        return true;
     }
 
     private EmployeeBatchOutcome processEmployeeEventBatch(
@@ -385,7 +410,37 @@ public final class SyncCoordinator {
         if (!db.commitEmployeeFaceBatch(batchWrites)) {
             return EmployeeBatchOutcome.failure("员工批次本地落库失败", toEmployeeResultList(employeeResults));
         }
+        pruneCommittedFaceFiles(context, batchWrites);
         return EmployeeBatchOutcome.success(toEmployeeResultList(employeeResults));
+    }
+
+    private void pruneCommittedFaceFiles(Context context,
+                                         List<DatabaseHelper.FaceBatchWrite> writes) {
+        if (context == null || writes == null) {
+            return;
+        }
+        for (DatabaseHelper.FaceBatchWrite write : writes) {
+            if (write == null) {
+                continue;
+            }
+            String employeeId = write.employee != null ? write.employee.id : write.employeeId;
+            if (isBlank(employeeId)) {
+                continue;
+            }
+            if (write.markDeleted || DatabaseHelper.FaceBatchWrite.OP_REMOVE.equals(write.applyOperation)) {
+                FaceFileManager.deleteFaceImage(context, employeeId);
+                continue;
+            }
+            if (write.employee != null && write.feature != null) {
+                FaceFileManager.pruneObsoleteFaceImages(
+                        context,
+                        employeeId,
+                        write.employee.faceVersion,
+                        write.employee.faceImageSha256,
+                        write.employee.faceImageUrl
+                );
+            }
+        }
     }
 
     private void markEmployeeBatchItemProcessed(EmployeeBatchProgressCallback progressCallback,
@@ -453,7 +508,31 @@ public final class SyncCoordinator {
         return false;
     }
 
-    private boolean syncEmployeesEventInBatches(Context context,
+    private boolean waitForFaceApplyBackpressure(Context context) {
+        if (!shouldPauseEmployeeBatchFetch(context)) {
+            return true;
+        }
+        long deadline = System.currentTimeMillis() + FACE_APPLY_BACKPRESSURE_MAX_WAIT_MS;
+        while (shouldPauseEmployeeBatchFetch(context)) {
+            if (!FaceManager.get().isInitialized() || !FaceManager.get().isFaceLibraryReady()) {
+                AppLogger.w(TAG, "Face apply backlog cannot drain because runtime library is not ready");
+                return false;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                AppLogger.w(TAG, "Timed out waiting for face apply backlog to drain");
+                return false;
+            }
+            try {
+                Thread.sleep(FACE_APPLY_BACKPRESSURE_WAIT_MS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private PlatformEventExecutor.AckWork processEmployeesEventInBatches(Context context,
                                                 HeartbeatDto.HeartbeatEventData event) {
         PunchApplication app = PunchApplication.get();
         if (app != null) {
@@ -477,7 +556,7 @@ public final class SyncCoordinator {
                         InteractionLogger.GROUP_EMPLOYEE_SYNC,
                         "员工批次拉取失败",
                         "page=" + page + "\nreason=" + safeString(result.message));
-                return false;
+                return null;
             }
 
             EmployeeSyncData data = result.data;
@@ -520,7 +599,7 @@ public final class SyncCoordinator {
                         InteractionLogger.GROUP_EMPLOYEE_SYNC,
                         "员工批次处理失败",
                         "page=" + page + "\nreason=" + safeString(batch.failureMessage));
-                return false;
+                return null;
             }
 
             eventEmployeeResults.addAll(batch.employeeResults);
@@ -547,6 +626,19 @@ public final class SyncCoordinator {
             if (!data.hasMore) {
                 break;
             }
+            if (!waitForFaceApplyBackpressure(context)) {
+                if (app != null) {
+                    app.failEmployeeSyncProgress(
+                            "人员更新暂停：本地人脸应用积压，等待下一次重试",
+                            eventEmployeeResults.size());
+                }
+                InteractionLogger.logBusinessFailure(
+                        InteractionLogger.GROUP_EMPLOYEE_SYNC,
+                        "员工批次触发背压保护",
+                        "page=" + page + "\\npending_face_apply="
+                                + DatabaseHelper.get(context).getPendingFaceApplyTaskCount());
+                return null;
+            }
             page += 1;
         }
 
@@ -556,33 +648,40 @@ public final class SyncCoordinator {
             app.markEmployeeSyncReporting(eventEmployeeResults.size(), successTotal, failedTotal);
         }
 
-        ApiResult<Void> ackResult = ApiService.reportEventResult(
-                event.cursor,
-                event.eventType,
-                true,
-                eventEmployeeResults,
-                null);
-        if (!ackResult.success) {
-            if (app != null) {
-                app.failEmployeeSyncProgress("人员更新确认失败，等待服务器重新下发", eventEmployeeResults.size());
+        final int total = eventEmployeeResults.size();
+        final List<EventResultDto.EmployeeResult> ackEmployeeResults =
+                new ArrayList<>(eventEmployeeResults);
+        return () -> {
+            ApiResult<Void> ackResult = ApiService.reportEventResult(
+                    event.cursor,
+                    event.eventType,
+                    true,
+                    ackEmployeeResults,
+                    null);
+            if (!ackResult.success) {
+                if (app != null) {
+                    app.failEmployeeSyncProgress(
+                            "人员更新确认失败，等待服务器重新下发",
+                            total);
+                }
+                AppLogger.w(TAG, "Employee event ACK failed: cursor=" + event.cursor
+                        + " reason=" + ackResult.message);
+                InteractionLogger.logBusinessFailure(
+                        InteractionLogger.GROUP_EVENT_RESULT,
+                        "员工事件结果回传失败",
+                        "cursor=" + event.cursor + "\\nreason=" + safeString(ackResult.message));
+                return false;
             }
-            AppLogger.w(TAG, "Employee event ACK failed: cursor=" + event.cursor
-                    + " reason=" + ackResult.message);
-            InteractionLogger.logBusinessFailure(
-                    InteractionLogger.GROUP_EVENT_RESULT,
-                    "员工事件结果回传失败",
-                    "cursor=" + event.cursor + "\nreason=" + safeString(ackResult.message));
-            return false;
-        }
 
-        if (app != null) {
-            app.completeEmployeeSyncProgress(eventEmployeeResults.size(), successTotal, failedTotal);
-        }
-        InteractionLogger.logBusiness(
-                InteractionLogger.GROUP_EVENT_RESULT,
-                "事件结果已回传",
-                "cursor=" + event.cursor + "\n人数=" + eventEmployeeResults.size());
-        return true;
+            if (app != null) {
+                app.completeEmployeeSyncProgress(total, successTotal, failedTotal);
+            }
+            InteractionLogger.logBusiness(
+                    InteractionLogger.GROUP_EVENT_RESULT,
+                    "事件结果已回传",
+                    "cursor=" + event.cursor + "\\n人数=" + total);
+            return true;
+        };
     }
 
     private EventProcessingOutcome handleEvent(Context context, HeartbeatDto.HeartbeatEventData event) {

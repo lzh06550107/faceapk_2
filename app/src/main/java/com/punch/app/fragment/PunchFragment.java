@@ -53,6 +53,7 @@ import com.punch.app.network.ApiService;
 import com.punch.app.network.InteractionLogger;
 import com.punch.app.network.dto.PunchDto;
 import com.punch.app.service.PunchPersistence;
+import com.punch.app.service.PunchEmployeeEligibility;
 import com.punch.app.service.SyncService;
 import com.punch.app.utils.AvatarLoader;
 import com.punch.app.utils.AppLogger;
@@ -1483,9 +1484,19 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         if (!viewGate.isActive(taskViewToken)) {
             return;
         }
-        Employee emp = DatabaseHelper.get(context).getEmployee(result.empId);
+        DatabaseHelper db = DatabaseHelper.get(context);
+        Employee emp = db.getEmployee(result.empId);
         if (emp == null) {
             postToActiveView(taskViewToken, () -> showEmployeeLookupFailure(result.empId));
+            return;
+        }
+
+        boolean faceUpdatePending = db.hasPendingFaceApplyTask(
+                emp.id, DatabaseHelper.FaceBatchWrite.OP_UPSERT);
+        if (!PunchEmployeeEligibility.isFaceAuthorizationCurrent(emp, faceUpdatePending)) {
+            resetPendingMatch();
+            postToActiveView(taskViewToken, () ->
+                    setStatus("人脸资料已更新，正在同步，请稍后重试"));
             return;
         }
 

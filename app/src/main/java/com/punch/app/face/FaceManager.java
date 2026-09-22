@@ -487,7 +487,12 @@ public class FaceManager {
             return cached.feature;
         }
 
-        String imagePath = FaceFileManager.getFaceImagePath(context, emp.id);
+        String imagePath = FaceFileManager.findFaceImagePath(
+                context,
+                emp.id,
+                emp.faceVersion,
+                emp.faceImageSha256,
+                emp.faceImageUrl);
         byte[] feature = extractFeatureFromFile(imagePath, emp.id);
         if (feature == null) {
             return null;
