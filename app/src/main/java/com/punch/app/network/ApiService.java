@@ -109,6 +109,13 @@ public final class ApiService {
         return emptyResult(ApiClient.post(ApiEndpoints.EVENT_RESULT, body));
     }
 
+    /**
+     * Synchronously asks the server to accept one punch attempt.
+     *
+     * <p>Despite the legacy endpoint name, a successful response with
+     * {@code is_over_capacity=false} means the server has already atomically accepted
+     * this punch attempt. The later {@code /clock/upload} only completes detail data.</p>
+     */
     public static ApiResult<PunchDto.LineCapacityData> acceptLinePunch(String clientRecordId,
                                                                        String numbers,
                                                                        String lineBindingCode,
