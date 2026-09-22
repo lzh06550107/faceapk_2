@@ -1838,13 +1838,13 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         boolean inserted = PunchPersistence.persist(
                 context, record, Constants.ACTION_PUNCH_PUSH);
         if (inserted) {
-            SyncService.triggerSync(context);
             if (viewGate.isActive(taskViewToken)) {
                 postToActiveView(taskViewToken,
                         () -> showPunchResult(record, false, false));
             } else {
                 setRecognizing(false);
             }
+            SyncService.triggerSync(context);
             return;
         }
 
@@ -1854,13 +1854,13 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             if (!safeString(record.snapImagePath).equals(safeString(existing.snapImagePath))) {
                 PunchSnapshotHelper.deleteSnapshot(record.snapImagePath);
             }
-            SyncService.triggerSync(context);
             if (viewGate.isActive(taskViewToken)) {
                 postToActiveView(taskViewToken,
                         () -> showPunchResult(existing, false, false));
             } else {
                 setRecognizing(false);
             }
+            SyncService.triggerSync(context);
             return;
         }
 
@@ -1944,8 +1944,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         Employee employee = DatabaseHelper.get(requireContext()).getEmployee(record.empId);
         String typeStr = "打卡";
         String syncStr = synced
-                ? "\u5df2\u540c\u6b65"
-                : (isFastPunchModeEnabled() ? "\u5df2\u4fdd\u5b58\uff0c\u540e\u53f0\u540c\u6b65" : "\u5df2\u79bb\u7ebf\u4fdd\u5b58");
+                ? "资料已同步"
+                : "服务端已受理，资料后台同步";
         String statusMessage = buildEmployeeStatusMessage(record.empName, record.empId, "\u6253\u5361\u6210\u529f", null);
         String resultMessage = buildEmployeeResultMessage(
                 record.empName,
