@@ -59,6 +59,65 @@ public class PunchApiTest extends ApiTestSupport {
     }
 
     @Test
+    public void acceptLinePunch_shouldRetryTransportFailureWithSameClientRecordId() throws Exception {
+        SessionManager.get().saveToken("token-abc", 1893456000L);
+        interceptor.enqueueFailure("timeout");
+        interceptor.enqueueJson(200, successEnvelope("{\"is_over_capacity\":false}"));
+
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                1782424800L
+        );
+
+        assertTrue(result.success);
+        assertFalse(result.data.isOverCapacity);
+        assertEquals(2, interceptor.getRequestCount());
+
+        Request request = interceptor.takeRequest();
+        assertEquals("/v3/handheld/line/isOverCapacity", request.url().encodedPath());
+        String body = interceptor.takeBody();
+        assertTrue(body.contains("\"client_record_id\":\"PDEVICE001_01KXYZ\""));
+        assertTrue(body.contains("\"punch_time\":1782424800"));
+    }
+
+    @Test
+    public void acceptLinePunch_shouldStopAfterOneTransportRetry() {
+        SessionManager.get().saveToken("token-abc", 1893456000L);
+        interceptor.enqueueFailure("timeout-1");
+        interceptor.enqueueFailure("timeout-2");
+
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                1782424800L
+        );
+
+        assertFalse(result.success);
+        assertEquals(-1, result.code);
+        assertEquals(2, interceptor.getRequestCount());
+    }
+
+    @Test
+    public void acceptLinePunch_shouldNotRetryHttp500() {
+        SessionManager.get().saveToken("token-abc", 1893456000L);
+        interceptor.enqueueJson(500, "{\"code\":500,\"msg\":\"server error\",\"data\":null}");
+
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                1782424800L
+        );
+
+        assertFalse(result.success);
+        assertEquals(500, result.code);
+        assertEquals(1, interceptor.getRequestCount());
+    }
+
+    @Test
     public void acceptLinePunch_shouldFailWhenTokenMissing() {
         ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
                 "PDEVICE001_01KXYZ",
