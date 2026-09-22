@@ -2,7 +2,6 @@ package com.punch.app.fragment;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
@@ -24,21 +23,16 @@ import android.text.style.StyleSpan;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.Spinner;
-import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -54,7 +48,10 @@ import com.punch.app.db.DatabaseHelper;
 import com.punch.app.face.FaceManager;
 import com.punch.app.model.Employee;
 import com.punch.app.model.PunchRecord;
+import com.punch.app.network.ApiResult;
+import com.punch.app.network.ApiService;
 import com.punch.app.network.InteractionLogger;
+import com.punch.app.network.dto.PunchDto;
 import com.punch.app.service.PunchPersistence;
 import com.punch.app.service.SyncService;
 import com.punch.app.utils.AvatarLoader;
@@ -63,7 +60,6 @@ import com.punch.app.utils.Constants;
 import com.punch.app.utils.KioskManager;
 import com.punch.app.utils.LifecycleRequestGate;
 import com.punch.app.utils.PunchSnapshotHelper;
-import com.punch.app.utils.PunchTimeResolver;
 import com.punch.app.utils.ScreenTimeoutPolicy;
 import com.punch.app.utils.SessionManager;
 import com.punch.app.utils.UlidGenerator;
@@ -72,7 +68,6 @@ import com.punch.app.widget.FaceFrameView;
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
@@ -90,7 +85,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private static final String TAG = "PunchFragment";
     // Views
     private View layoutHeader;
-    private View layoutControls;
     private View layoutCameraContainer;
     private View layoutCameraLoading;
     private View layoutPunchStatusPanel;
@@ -107,8 +101,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private TextView tvEmployeeSyncTitle;
     private TextView tvEmployeeSyncDetail;
     private ProgressBar progressEmployeeSync;
-    private Spinner spinnerShift;
-    private Switch switchSpecialTime;
     private LinearLayout layoutResult;
     private FrameLayout layoutResultAvatar;
     private LinearLayout layoutPunchStatusHistory;
@@ -125,10 +117,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private boolean openingCamera = false;
 
     // State
-    private String punchType = Constants.PUNCH_TYPE_SIGN_IN;
     private boolean soundEnabled = true;
     private boolean punchEnabled = false;
-    private boolean specialTimeEnabled = false;
     private boolean previewFullscreen = false;
     private volatile boolean recognizing = false;
     private volatile boolean faceInteractionActive = false;
@@ -151,10 +141,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private static final float FACE_FRAME_MIN_OVERLAP = 0.55f;
     private static final float TTS_SPEECH_RATE_DEFAULT = 1.0f;
     private static final float TTS_SPEECH_RATE_CHINESE = 0.88f;
-    private static final int FREE_PUNCH_OPTION_VALUE = 0;
-    private static final String FREE_PUNCH_OPTION_LABEL = "\u81ea\u7531\u6253\u5361";
-    private static final String PUNCH_TYPE_FREE = "free";
-    private final List<String> punchOptions = new ArrayList<>();
+    private static final String PUNCH_TYPE_GENERIC = "punch";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable clearFaceInteractionRunnable = () -> {
@@ -174,9 +161,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private boolean punchActive = false;
     private boolean waitingFirstPreviewFrame = false;
     private boolean statusHistoryExpanded = false;
-    private boolean ambiguousPunchSelectionPending = false;
-    private boolean userChangingPunchSelection = false;
-    private ArrayAdapter<String> punchOptionAdapter;
     private final PunchApplication.PunchStatusListener punchStatusListener = this::renderPunchStatusSnapshot;
     private final Runnable hideStatusPanelRunnable = this::fadeOutStatusPanel;
 
@@ -875,15 +859,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 return "\u6253\u5361\u6210\u529f";
             }
         }
-        String action;
-        if (PUNCH_TYPE_FREE.equals(record.punchType)) {
-            action = "\u81ea\u7531\u6253\u5361\u6210\u529f";
-        } else if (Constants.PUNCH_TYPE_SIGN_IN.equals(record.punchType)) {
-            action = "\u4e0a\u73ed\u6253\u5361\u6210\u529f";
-        } else {
-            action = "\u4e0b\u73ed\u6253\u5361\u6210\u529f";
-        }
-        return displayName + "\uff0c" + action;
+        return displayName + "，打卡成功";
     }
     private String buildPunchFailureSpeech(@Nullable String employeeName,
                                            @Nullable String employeeId,
@@ -1515,6 +1491,10 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         }
 
         String clientRecordId = "P" + SessionManager.get().getDeviceId() + "_" + UlidGenerator.generate();
+        long punchTime = matchedAt / 1000L;
+        setRecognizing(true);
+        postToActiveView(taskViewToken, () ->
+                setStatus(getEmployeeDisplayName(emp.name, emp.id) + "，正在打卡..."));
         PunchSnapshotHelper.Snapshot snapshot = PunchSnapshotHelper.capture(
                 context,
                 clientRecordId,
@@ -1525,8 +1505,15 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 mirror,
                 getNormalizedFrameCropRect(width, height, angle)
         );
-        postToActiveView(taskViewToken,
-                () -> doPunch(emp, result.score, durationMs, clientRecordId, snapshot));
+        processPunchAcceptance(
+                context,
+                taskViewToken,
+                emp,
+                result.score,
+                clientRecordId,
+                punchTime,
+                snapshot
+        );
     }
 
     private boolean isFaceInsideFrame(@Nullable RectF faceBounds, int width, int height, int angle) {
@@ -1662,165 +1649,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     }
 
     
-    private void updatePunchTypeFromSelection() {
-        if (isSelectedFreePunch()) {
-            punchType = PUNCH_TYPE_FREE;
-        } else {
-            punchType = isSelectedSignIn()
-                    ? Constants.PUNCH_TYPE_SIGN_IN
-                    : Constants.PUNCH_TYPE_SIGN_OUT;
-        }
-    }
-
-    
-    private String getSelectedPunchOptionLabel() {
-        Object selected = spinnerShift != null ? spinnerShift.getSelectedItem() : null;
-        return selected != null ? selected.toString() : FREE_PUNCH_OPTION_LABEL;
-    }
-
-    
-    private boolean isSelectedSignIn() {
-        return getSelectedPunchOptionLabel().endsWith("\u4e0a\u73ed");
-    }
-
-    private boolean isSelectedFreePunch() {
-        return FREE_PUNCH_OPTION_LABEL.equals(getSelectedPunchOptionLabel());
-    }
-
-    private List<Integer> getAllowedPunchOptionIndexesNow() {
-        return PunchTimeResolver.findAllowedPunchOptionIndexes(
-                punchOptions,
-                System.currentTimeMillis(),
-                SessionManager.get().getPunchTimeWindowMinutes(),
-                SessionManager.get().getOvertimeSignOutOptions()
-        );
-    }
-
-    private boolean isSelectedPunchOptionWithinAllowedTime() {
-        if (isSelectedFreePunch() || specialTimeEnabled) {
-            return true;
-        }
-        return PunchTimeResolver.isWithinAllowedPunchTime(
-                getSelectedPunchOptionLabel(),
-                System.currentTimeMillis(),
-                SessionManager.get().getPunchTimeWindowMinutes(),
-                punchOptions,
-                SessionManager.get().getOvertimeSignOutOptions()
-        );
-    }
-
-    private void showOutOfPunchTimeRangeDialog(@Nullable PunchSnapshotHelper.Snapshot snapshot) {
-        if (snapshot != null) {
-            PunchSnapshotHelper.deleteSnapshot(snapshot.path);
-        }
-        resetRecognitionAttempt();
-        resetPendingMatch();
-        if (!isAdded()) {
-            setRecognizing(false);
-            return;
-        }
-        setStatus("\u5f53\u524d\u6253\u5361\u4e0d\u5728\u6253\u5361\u65f6\u95f4\u8303\u56f4");
-        playForbiddenFeedback("\u5f53\u524d\u6253\u5361\u4e0d\u5728\u6253\u5361\u65f6\u95f4\u8303\u56f4");
-        final boolean[] autoSelected = {false};
-        final int[] selectedIndex = {-1};
-        AlertDialog.Builder builder = new AlertDialog.Builder(requireContext())
-                .setTitle("\u65e0\u6cd5\u6253\u5361")
-                .setMessage("\u5f53\u524d\u6253\u5361\u4e0d\u5728\u6253\u5361\u65f6\u95f4\u8303\u56f4")
-                .setPositiveButton("\u786e\u5b9a", null)
-                .setOnDismissListener(dialog -> {
-                    setRecognizing(false);
-                    if (autoSelected[0]) {
-                        setStatus("\u5df2\u81ea\u52a8\u9009\u62e9\uff1a" + getPunchOptionLabel(selectedIndex[0]));
-                    } else {
-                        updateIdleStatus();
-                    }
-                });
-        int autoSelectableIndex = resolveUniqueAllowedPunchOptionIndex();
-        if (autoSelectableIndex >= 0) {
-            builder.setNegativeButton("\u81ea\u52a8\u9009\u62e9", (dialog, which) -> {
-                autoSelected[0] = true;
-                selectedIndex[0] = autoSelectableIndex;
-                spinnerShift.setSelection(autoSelectableIndex);
-                ambiguousPunchSelectionPending = false;
-            });
-        }
-        builder.show();
-    }
-
-    private int resolveUniqueAllowedPunchOptionIndex() {
-        List<Integer> allowedIndexes = getAllowedPunchOptionIndexesNow();
-        if (allowedIndexes.size() != 1) {
-            return -1;
-        }
-        int index = allowedIndexes.get(0);
-        if (spinnerShift != null && spinnerShift.getSelectedItemPosition() == index) {
-            return -1;
-        }
-        return index;
-    }
-
-    private String getPunchOptionLabel(int position) {
-        if (position < 0 || position >= punchOptions.size()) {
-            return "";
-        }
-        String label = punchOptions.get(position);
-        return label == null ? "" : label;
-    }
-
-    private void showAmbiguousPunchOptionDialog(@Nullable PunchSnapshotHelper.Snapshot snapshot) {
-        if (snapshot != null) {
-            PunchSnapshotHelper.deleteSnapshot(snapshot.path);
-        }
-        resetRecognitionAttempt();
-        resetPendingMatch();
-        if (!isAdded()) {
-            setRecognizing(false);
-            return;
-        }
-        setStatus("\u5f53\u524d\u65f6\u95f4\u547d\u4e2d\u591a\u4e2a\u6253\u5361\u9879\uff0c\u8bf7\u624b\u52a8\u9009\u62e9");
-        playForbiddenFeedback("\u5f53\u524d\u65f6\u95f4\u547d\u4e2d\u591a\u4e2a\u6253\u5361\u9879\uff0c\u8bf7\u624b\u52a8\u9009\u62e9");
-        new AlertDialog.Builder(requireContext())
-                .setTitle("\u8bf7\u624b\u52a8\u9009\u62e9\u6253\u5361\u9879")
-                .setMessage("\u5f53\u524d\u65f6\u95f4\u547d\u4e2d\u591a\u4e2a\u6253\u5361\u9879\uff0c\u8bf7\u624b\u52a8\u9009\u62e9")
-                .setPositiveButton("\u786e\u5b9a", null)
-                .setOnDismissListener(dialog -> {
-                    setRecognizing(false);
-                    updateIdleStatus();
-                })
-                .show();
-    }
-
-    private int getSelectedClockIndex() {
-        if (spinnerShift == null) {
-            return FREE_PUNCH_OPTION_VALUE;
-        }
-        if (isSelectedFreePunch()) {
-            return FREE_PUNCH_OPTION_VALUE;
-        }
-        int selectedIndex = spinnerShift.getSelectedItemPosition();
-        return selectedIndex >= 0 ? selectedIndex + 1 : FREE_PUNCH_OPTION_VALUE;
-    }
-
-    
-    private long resolvePunchTimeSeconds() {
-        if (!specialTimeEnabled) {
-            return System.currentTimeMillis() / 1000;
-        }
-        return resolveScheduledPunchTimeSeconds(getSelectedPunchOptionLabel());
-    }
-
-    
-    private long resolveScheduledPunchTimeSeconds(String optionLabel) {
-        return PunchTimeResolver.resolveAllowedPunchTimeSeconds(
-                optionLabel,
-                System.currentTimeMillis(),
-                SessionManager.get().getPunchTimeWindowMinutes(),
-                punchOptions,
-                SessionManager.get().getOvertimeSignOutOptions()
-        );
-    }
-
-    
     private String buildPunchDate(long punchTimeSeconds) {
         return new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
                 .format(new Date(punchTimeSeconds * 1000));
@@ -1860,31 +1688,16 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         });
     }
 
-    private void doPunch(Employee emp,
-                         float matchScore,
-                         long durationMs,
-                         String clientRecordId,
-                         @Nullable PunchSnapshotHelper.Snapshot snapshot) {
-        setRecognizing(true);
-
-        String deviceId = SessionManager.get().getDeviceId();
+    private void processPunchAcceptance(Context context,
+                                        int taskViewToken,
+                                        Employee emp,
+                                        float matchScore,
+                                        String clientRecordId,
+                                        long punchTime,
+                                        @Nullable PunchSnapshotHelper.Snapshot snapshot) {
         String lineCode = SessionManager.get().getLineCode();
         int teamBindingId = SessionManager.get().getTeamBindingId();
-        int clockIndex = getSelectedClockIndex();
         String status = emp.status != null ? emp.status : Constants.STATUS_NORMAL;
-        String shiftLabel = getSelectedPunchOptionLabel();
-        long punchTime = resolvePunchTimeSeconds();
-        String punchDate = buildPunchDate(punchTime);
-
-        if (ambiguousPunchSelectionPending) {
-            showAmbiguousPunchOptionDialog(snapshot);
-            return;
-        }
-
-        if (!isSelectedPunchOptionWithinAllowedTime()) {
-            showOutOfPunchTimeRangeDialog(snapshot);
-            return;
-        }
 
         if (isForbiddenStatus(status)) {
             showForbiddenPunchDialog(emp, status, snapshot != null ? snapshot.path : null);
@@ -1892,16 +1705,59 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         }
 
         if (isBlank(lineCode) || teamBindingId <= 0) {
-            showMissingBindingConfigFailure(snapshot, lineCode, teamBindingId);
+            postToActiveView(taskViewToken,
+                    () -> showMissingBindingConfigFailure(snapshot, lineCode, teamBindingId));
             return;
         }
 
-        if (shouldBlockPunchByCheckCount(emp.id, punchDate, lineCode, teamBindingId, clockIndex)) {
-            showCheckCountLimitReached(emp, snapshot);
+        if (snapshot == null) {
+            postToActiveView(taskViewToken, () -> showSnapshotCaptureFailure(emp));
             return;
         }
-        if (snapshot == null) {
-            showSnapshotCaptureFailure(emp);
+
+        ApiResult<PunchDto.LineCapacityData> acceptance = ApiService.acceptLinePunch(
+                clientRecordId,
+                emp.id,
+                lineCode,
+                punchTime
+        );
+
+        if (!viewGate.isActive(taskViewToken)) {
+            PunchSnapshotHelper.deleteSnapshot(snapshot.path);
+            setRecognizing(false);
+            return;
+        }
+
+        postToActiveView(taskViewToken, () -> handlePunchAcceptance(
+                emp,
+                matchScore,
+                clientRecordId,
+                punchTime,
+                lineCode,
+                teamBindingId,
+                snapshot,
+                acceptance
+        ));
+    }
+
+    private void handlePunchAcceptance(Employee emp,
+                                       float matchScore,
+                                       String clientRecordId,
+                                       long punchTime,
+                                       String lineCode,
+                                       int teamBindingId,
+                                       PunchSnapshotHelper.Snapshot snapshot,
+                                       ApiResult<PunchDto.LineCapacityData> acceptance) {
+        if (acceptance == null || !acceptance.success || acceptance.data == null) {
+            String detail = acceptance != null && !isBlank(acceptance.message)
+                    ? acceptance.message
+                    : "服务器连接失败";
+            showPunchAcceptanceFailure(emp, detail, snapshot);
+            return;
+        }
+
+        if (acceptance.data.isOverCapacity) {
+            showLineCapacityReached(emp, snapshot);
             return;
         }
 
@@ -1912,12 +1768,12 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         record.empName = emp.name;
         record.dept = emp.dept;
         record.punchTime = punchTime;
-        record.punchDate = punchDate;
-        record.punchType = punchType;
-        record.shiftName = shiftLabel;
+        record.punchDate = buildPunchDate(punchTime);
+        record.punchType = PUNCH_TYPE_GENERIC;
+        record.shiftName = "";
         record.lineCode = lineCode;
         record.teamBindingId = teamBindingId;
-        record.clockIndex = clockIndex;
+        record.clockIndex = 0;
         record.matchScore = matchScore;
         record.snapImagePath = snapshot.path;
         record.snapImageMimeType = snapshot.mimeType;
@@ -1930,43 +1786,43 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         savePunchAndSync(record);
     }
 
-    private boolean shouldBlockPunchByCheckCount(String empId,
-                                                 String punchDate,
-                                                 String lineCode,
-                                                 int teamBindingId,
-                                                 int clockIndex) {
-        int checkCount = SessionManager.get().getCheckCount();
-        if (checkCount <= 0 || lineCode == null || lineCode.trim().isEmpty() || teamBindingId <= 0) {
-            return false;
-        }
-        List<String> signedEmpIds = DatabaseHelper.get(requireContext())
-                .getSignedEmpIds(punchDate, lineCode, teamBindingId, clockIndex);
-        if (signedEmpIds.contains(empId)) {
-            return false;
-        }
-        return signedEmpIds.size() >= checkCount;
-    }
-
-    private void showCheckCountLimitReached(Employee emp, @Nullable PunchSnapshotHelper.Snapshot snapshot) {
-        String statusMessage = buildEmployeeStatusMessage(
-                emp.name,
-                emp.id,
-                "\u7981\u6b62\u6253\u5361",
-                "\u5f53\u524d\u73ed\u6b21\u4eba\u6570\u5df2\u8fbe\u4e0a\u9650"
-        );
-        playForbiddenFeedback(buildForbiddenSpeech(emp.name, emp.id, "\u5f53\u524d\u73ed\u6b21\u4eba\u6570\u5df2\u8fbe\u4e0a\u9650"));
+    private void showLineCapacityReached(Employee emp,
+                                         PunchSnapshotHelper.Snapshot snapshot) {
+        String detail = "当前线体人数已达上限";
+        playForbiddenFeedback(buildPunchFailureSpeech(emp.name, emp.id, detail));
         showResultCard(
-                statusMessage,
-                buildEmployeeResultMessage(emp.name, emp.id, "\u7981\u6b62\u6253\u5361", "\u5f53\u524d\u73ed\u6b21\u4eba\u6570\u5df2\u8fbe\u4e0a\u9650"),
+                buildEmployeeStatusMessage(emp.name, emp.id, "打卡失败", detail),
+                buildEmployeeResultMessage(emp.name, emp.id, "打卡失败", detail),
                 false,
                 getEmployeeDisplayName(emp.name, emp.id),
-                snapshot != null ? snapshot.path : null,
+                snapshot.path,
                 emp.faceImageUrl,
-                snapshot != null ? snapshot.path : null
+                snapshot.path
         );
     }
 
-    
+    private void showPunchAcceptanceFailure(Employee emp,
+                                            String detail,
+                                            PunchSnapshotHelper.Snapshot snapshot) {
+        AppLogger.w(TAG, "Punch acceptance failed: employee=" + safeString(emp.id)
+                + ", detail=" + safeString(detail));
+        InteractionLogger.logBusinessFailure(
+                InteractionLogger.GROUP_PUNCH,
+                "打卡受理失败",
+                "employee=" + safeString(emp.id) + "\ndetail=" + safeString(detail)
+        );
+        playFailFeedback(buildPunchFailureSpeech(emp.name, emp.id, detail));
+        showResultCard(
+                buildEmployeeStatusMessage(emp.name, emp.id, "打卡失败", detail),
+                buildEmployeeResultMessage(emp.name, emp.id, "打卡失败", detail),
+                false,
+                getEmployeeDisplayName(emp.name, emp.id),
+                snapshot.path,
+                emp.faceImageUrl,
+                snapshot.path
+        );
+    }
+
     private void savePunchAndSync(PunchRecord record) {
         boolean inserted = PunchPersistence.persist(
                 requireContext(), record, Constants.ACTION_PUNCH_PUSH);
@@ -2027,14 +1883,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         String timeStr = new SimpleDateFormat("HH:mm:ss", Locale.getDefault())
                 .format(new Date(record.punchTime * 1000));
         Employee employee = DatabaseHelper.get(requireContext()).getEmployee(record.empId);
-        String typeStr;
-        if (PUNCH_TYPE_FREE.equals(record.punchType)) {
-            typeStr = FREE_PUNCH_OPTION_LABEL;
-        } else {
-            typeStr = Constants.PUNCH_TYPE_SIGN_IN.equals(record.punchType)
-                    ? "\u4e0a\u73ed\u6253\u5361"
-                    : "\u4e0b\u73ed\u6253\u5361";
-        }
+        String typeStr = "打卡";
         String syncStr = synced
                 ? "\u5df2\u540c\u6b65"
                 : (isFastPunchModeEnabled() ? "\u5df2\u4fdd\u5b58\uff0c\u540e\u53f0\u540c\u6b65" : "\u5df2\u79bb\u7ebf\u4fdd\u5b58");
@@ -2475,125 +2324,4 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         super.onDestroy();
     }
 
-    private void rebuildPunchOptions() {
-        if (spinnerShift == null || punchOptionAdapter == null) {
-            return;
-        }
-        Object selectedItem = spinnerShift.getSelectedItem();
-        String currentSelection = selectedItem != null ? selectedItem.toString() : null;
-        ambiguousPunchSelectionPending = false;
-        userChangingPunchSelection = false;
-        punchOptions.clear();
-        for (String timeRange : SessionManager.get().getCurrentTeamTimeRanges()) {
-            if (timeRange == null) {
-                continue;
-            }
-            String range = timeRange.trim();
-            if (range.isEmpty()) {
-                continue;
-            }
-            punchOptions.add(range + " \u4e0a\u73ed");
-            punchOptions.add(range + " \u4e0b\u73ed");
-        }
-        punchOptions.add(FREE_PUNCH_OPTION_LABEL);
-        punchOptionAdapter.notifyDataSetChanged();
-        PunchTimeResolver.WindowValidationResult windowValidation =
-                PunchTimeResolver.validatePunchTimeWindows(
-                        SessionManager.get().getCurrentTeamTimeRanges(),
-                        SessionManager.get().getPunchTimeWindowMinutes(),
-                        SessionManager.get().getOvertimeSignOutOptions()
-                );
-        List<Integer> allowedIndexes = windowValidation.valid
-                ? getAllowedPunchOptionIndexesNow()
-                : new ArrayList<>();
-        int selectedIndex = currentSelection != null ? punchOptions.indexOf(currentSelection) : -1;
-        int freeIndex = punchOptions.indexOf(FREE_PUNCH_OPTION_LABEL);
-        if (!windowValidation.valid && selectedIndex < 0) {
-            selectedIndex = freeIndex;
-            setStatus(windowValidation.buildMessage());
-        } else if (selectedIndex < 0) {
-            if (allowedIndexes.size() == 1) {
-                selectedIndex = allowedIndexes.get(0);
-            } else if (allowedIndexes.size() > 1) {
-                ambiguousPunchSelectionPending = true;
-                selectedIndex = freeIndex;
-                setStatus("\u5f53\u524d\u65f6\u95f4\u547d\u4e2d\u591a\u4e2a\u6253\u5361\u9879\uff0c\u8bf7\u624b\u52a8\u9009\u62e9");
-            }
-        }
-        if (selectedIndex < 0) {
-            selectedIndex = freeIndex;
-        }
-        if (selectedIndex < 0) {
-            selectedIndex = punchOptions.size() > 1 ? 0 : freeIndex;
-        }
-        if (selectedIndex < 0) {
-            selectedIndex = 0;
-        }
-        spinnerShift.setSelection(selectedIndex);
-        updatePunchTypeFromSelection();
-    }
-
-    private final class PunchOptionAdapter extends ArrayAdapter<String> {
-        PunchOptionAdapter(Context context, List<String> options) {
-            super(context, android.R.layout.simple_spinner_dropdown_item, options);
-        }
-
-        @NonNull
-        @Override
-        public View getView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
-            View view = super.getView(position, convertView, parent);
-            bindOptionView(view, getItem(position), false);
-            return view;
-        }
-
-        @Override
-        public View getDropDownView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
-            View view = super.getDropDownView(position, convertView, parent);
-            bindOptionView(view, getItem(position), true);
-            return view;
-        }
-
-        private void bindOptionView(View view, @Nullable String label, boolean dropdown) {
-            if (!(view instanceof TextView)) {
-                return;
-            }
-            TextView textView = (TextView) view;
-            textView.setTextColor(resolvePunchOptionTextColor(label));
-            textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, dropdown ? 15 : 14);
-            textView.setTypeface(null, dropdown ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
-            int horizontalPadding = dpInt(dropdown ? 14 : 8);
-            int verticalPadding = dpInt(dropdown ? 10 : 4);
-            textView.setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding);
-            GradientDrawable background = new GradientDrawable();
-            background.setColor(resolvePunchOptionBackgroundColor(label, dropdown));
-            background.setCornerRadius(0f);
-            textView.setBackground(background);
-        }
-    }
-
-    private int resolvePunchOptionTextColor(@Nullable String label) {
-        if (FREE_PUNCH_OPTION_LABEL.equals(label)) {
-            return 0xFFFFFFFF;
-        }
-        if (label != null && label.endsWith("\u4e0a\u73ed")) {
-            return 0xFFFFFFFF;
-        }
-        if (label != null && label.endsWith("\u4e0b\u73ed")) {
-            return 0xFFFFFFFF;
-        }
-        return 0xFF1D1D1F;
-    }
-
-    private int resolvePunchOptionBackgroundColor(@Nullable String label, boolean dropdown) {
-        if (FREE_PUNCH_OPTION_LABEL.equals(label)) {
-            return dropdown ? 0xFFB71C1C : 0xFFC62828;
-        }
-        if (label != null && label.endsWith("\u4e0a\u73ed")) {
-            return dropdown ? 0xFF1B7A3A : 0xFF2E7D32;
-        }
-        if (label != null && label.endsWith("\u4e0b\u73ed")) {
-            return dropdown ? 0xFF0B4F8C : 0xFF0D5FA8;
-        }
-        return dropdown ? 0xFFF6F8FB : 0xFFEFF3F7;
-    }
 }
