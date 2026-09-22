@@ -52,6 +52,8 @@ import com.punch.app.network.ApiResult;
 import com.punch.app.network.ApiService;
 import com.punch.app.network.InteractionLogger;
 import com.punch.app.network.dto.PunchDto;
+import com.punch.app.service.PunchAcceptancePolicy;
+import com.punch.app.service.PunchDepartureLatch;
 import com.punch.app.service.PunchPersistence;
 import com.punch.app.service.PunchEmployeeEligibility;
 import com.punch.app.service.SyncService;
@@ -132,6 +134,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private static final long RECOGNITION_TIMEOUT_FEEDBACK_COOLDOWN_MS = 1500;
     private static final long LIVENESS_DEBUG_LOG_COOLDOWN_MS = 1500;
     private static final int STABLE_MATCH_REQUIRED_FRAMES = 2;
+    private static final int DEPARTURE_CLEAR_NO_FACE_FRAMES = 3;
     private static final long STABLE_MATCH_MAX_GAP_MS = 1500;
     private static final long CAMERA_RELEASE_DELAY_MS = 1800;
     private static final long FACE_INTERACTION_GRACE_MS = 2000;
@@ -168,6 +171,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private String pendingMatchEmpId;
     private int pendingMatchCount = 0;
     private long pendingMatchLastAt = 0L;
+    private final PunchDepartureLatch departureLatch =
+            new PunchDepartureLatch(DEPARTURE_CLEAR_NO_FACE_FRAMES);
 
     @Nullable
     @Override
@@ -1444,6 +1449,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         if (!result.matched) {
             resetPendingMatch();
             if (FaceManager.ERROR_NO_FACE_DETECTED.equals(result.errorMsg)) {
+                departureLatch.onNoFaceFrame();
                 resetRecognitionAttempt();
                 return;
             }
@@ -1475,6 +1481,13 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         }
 
         resetRecognitionAttempt();
+        if (departureLatch.shouldBlockMatchedEmployee(result.empId)) {
+            resetPendingMatch();
+            postToActiveView(taskViewToken, () ->
+                    setStatus("请离开识别框后再次打卡"));
+            return;
+        }
+
         long matchedAt = System.currentTimeMillis();
         if (!confirmStableMatch(result.empId, matchedAt)) {
             postToActiveView(taskViewToken, () -> setStatus("\u6b63\u5728\u786e\u8ba4\u8eab\u4efd..."));
@@ -1497,6 +1510,13 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             resetPendingMatch();
             postToActiveView(taskViewToken, () ->
                     setStatus("人脸资料已更新，正在同步，请稍后重试"));
+            return;
+        }
+        if (db.hasPendingPunchAcceptanceForEmployee(emp.id)) {
+            departureLatch.latch(emp.id);
+            resetPendingMatch();
+            postToActiveView(taskViewToken, () ->
+                    setStatus("上次打卡仍在确认中，请勿重复打卡"));
             return;
         }
 
@@ -1725,62 +1745,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             return;
         }
 
-        ApiResult<PunchDto.LineCapacityData> acceptance = ApiService.acceptLinePunch(
-                clientRecordId,
-                emp.id,
-                lineCode,
-                punchTime
-        );
-
-        handlePunchAcceptance(
-                context,
-                taskViewToken,
-                emp,
-                matchScore,
-                clientRecordId,
-                punchTime,
-                lineCode,
-                teamBindingId,
-                snapshot,
-                acceptance
-        );
-    }
-
-    private void handlePunchAcceptance(Context context,
-                                       int taskViewToken,
-                                       Employee emp,
-                                       float matchScore,
-                                       String clientRecordId,
-                                       long punchTime,
-                                       String lineCode,
-                                       int teamBindingId,
-                                       PunchSnapshotHelper.Snapshot snapshot,
-                                       ApiResult<PunchDto.LineCapacityData> acceptance) {
-        if (acceptance == null || !acceptance.success || acceptance.data == null) {
-            String detail = acceptance != null && !isBlank(acceptance.message)
-                    ? acceptance.message
-                    : "服务器连接失败";
-            if (viewGate.isActive(taskViewToken)) {
-                postToActiveView(taskViewToken,
-                        () -> showPunchAcceptanceFailure(emp, detail, snapshot));
-            } else {
-                PunchSnapshotHelper.deleteSnapshot(snapshot.path);
-                setRecognizing(false);
-            }
-            return;
-        }
-
-        if (acceptance.data.isOverCapacity) {
-            if (viewGate.isActive(taskViewToken)) {
-                postToActiveView(taskViewToken,
-                        () -> showLineCapacityReached(emp, snapshot));
-            } else {
-                PunchSnapshotHelper.deleteSnapshot(snapshot.path);
-                setRecognizing(false);
-            }
-            return;
-        }
-
         PunchRecord record = new PunchRecord();
         record.id = UlidGenerator.generate();
         record.clientRecordId = clientRecordId;
@@ -1802,8 +1766,102 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         record.snapImageSize = snapshot.sizeBytes;
         record.snapCapturedAt = snapshot.capturedAtSeconds;
         record.isSynced = 0;
+        record.punchState = PunchRecord.STATE_ACCEPTING;
 
-        persistAcceptedPunch(context, taskViewToken, record);
+        boolean persisted = PunchPersistence.persist(
+                context, record, Constants.ACTION_PUNCH_ACCEPT);
+        if (!persisted) {
+            AppLogger.w(TAG, "Punch intent persistence failed before server acceptance: "
+                    + safeString(record.clientRecordId));
+            InteractionLogger.logBusinessFailure(
+                    InteractionLogger.GROUP_PUNCH,
+                    "打卡意图保存失败",
+                    "client_record_id=" + safeString(record.clientRecordId)
+                            + "\nemployee=" + safeString(record.empId));
+            postToActiveView(taskViewToken, () ->
+                    showPunchAcceptanceFailure(emp, "本地资料保存失败，请重试", snapshot));
+            return;
+        }
+
+        ApiResult<PunchDto.LineCapacityData> acceptance = ApiService.acceptLinePunch(
+                record.clientRecordId,
+                record.empId,
+                record.lineCode,
+                record.punchTime
+        );
+
+        handlePunchAcceptance(context, taskViewToken, emp, record, snapshot, acceptance);
+    }
+
+    private void handlePunchAcceptance(Context context,
+                                       int taskViewToken,
+                                       Employee emp,
+                                       PunchRecord record,
+                                       PunchSnapshotHelper.Snapshot snapshot,
+                                       ApiResult<PunchDto.LineCapacityData> acceptance) {
+        DatabaseHelper db = DatabaseHelper.get(context);
+
+        if (acceptance == null || !acceptance.success || acceptance.data == null) {
+            int code = acceptance == null ? -1 : acceptance.code;
+            String detail = acceptance != null && !isBlank(acceptance.message)
+                    ? acceptance.message
+                    : "服务器连接失败";
+
+            if (PunchAcceptancePolicy.shouldRetryLater(code)) {
+                departureLatch.latch(emp.id);
+                if (viewGate.isActive(taskViewToken)) {
+                    postToActiveView(taskViewToken,
+                            () -> showPunchAcceptancePending(emp, snapshot, detail));
+                } else {
+                    setRecognizing(false);
+                }
+                SyncService.triggerSync(context);
+                return;
+            }
+
+            db.discardPunchIntent(record.clientRecordId);
+            if (viewGate.isActive(taskViewToken)) {
+                postToActiveView(taskViewToken,
+                        () -> showPunchAcceptanceFailure(emp, detail, snapshot));
+            } else {
+                PunchSnapshotHelper.deleteSnapshot(snapshot.path);
+                setRecognizing(false);
+            }
+            return;
+        }
+
+        if (acceptance.data.isOverCapacity) {
+            db.discardPunchIntent(record.clientRecordId);
+            if (viewGate.isActive(taskViewToken)) {
+                postToActiveView(taskViewToken,
+                        () -> showLineCapacityReached(emp, snapshot));
+            } else {
+                PunchSnapshotHelper.deleteSnapshot(snapshot.path);
+                setRecognizing(false);
+            }
+            return;
+        }
+
+        boolean transitioned = db.markPunchAcceptedAndQueueUpload(record.clientRecordId);
+        departureLatch.latch(emp.id);
+        if (!transitioned) {
+            AppLogger.w(TAG, "Server accepted punch but local ACCEPTED transition is pending: "
+                    + safeString(record.clientRecordId));
+            InteractionLogger.logBusinessFailure(
+                    InteractionLogger.GROUP_PUNCH,
+                    "打卡已受理但本地状态推进失败",
+                    "client_record_id=" + safeString(record.clientRecordId));
+        } else {
+            record.punchState = PunchRecord.STATE_ACCEPTED;
+        }
+
+        if (viewGate.isActive(taskViewToken)) {
+            postToActiveView(taskViewToken,
+                    () -> showPunchResult(record, false, false));
+        } else {
+            setRecognizing(false);
+        }
+        SyncService.triggerSync(context);
     }
 
     private void showLineCapacityReached(Employee emp,
@@ -1818,6 +1876,36 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 snapshot.path,
                 emp.faceImageUrl,
                 snapshot.path
+        );
+    }
+
+    private void showPunchAcceptancePending(Employee emp,
+                                            PunchSnapshotHelper.Snapshot snapshot,
+                                            String detail) {
+        String message = "网络异常，服务器结果正在自动确认";
+        if (!isBlank(detail)) {
+            AppLogger.w(TAG, "Punch acceptance pending: employee=" + safeString(emp.id)
+                    + ", detail=" + safeString(detail));
+        }
+        InteractionLogger.logBusiness(
+                InteractionLogger.GROUP_PUNCH,
+                "打卡结果待确认",
+                "employee=" + safeString(emp.id)
+                        + "\nreason=" + safeString(detail)
+        );
+        showResultCard(
+                buildEmployeeStatusMessage(emp.name, emp.id, "打卡确认中", null),
+                buildEmployeeResultMessage(
+                        emp.name,
+                        emp.id,
+                        "打卡确认中",
+                        message + "\n请勿重复打卡"),
+                false,
+                getEmployeeDisplayName(emp.name, emp.id),
+                snapshot.path,
+                emp.faceImageUrl,
+                null,
+                getSuccessResultDisplayMs()
         );
     }
 
@@ -1841,84 +1929,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 emp.faceImageUrl,
                 snapshot.path
         );
-    }
-
-    private void persistAcceptedPunch(Context context,
-                                      int taskViewToken,
-                                      PunchRecord record) {
-        boolean inserted = PunchPersistence.persist(
-                context, record, Constants.ACTION_PUNCH_PUSH);
-        if (inserted) {
-            if (viewGate.isActive(taskViewToken)) {
-                postToActiveView(taskViewToken,
-                        () -> showPunchResult(record, false, false));
-            } else {
-                setRecognizing(false);
-            }
-            SyncService.triggerSync(context);
-            return;
-        }
-
-        DatabaseHelper db = DatabaseHelper.get(context);
-        PunchRecord existing = db.getUnsyncedPunchRecord(record.clientRecordId);
-        if (existing != null) {
-            if (!safeString(record.snapImagePath).equals(safeString(existing.snapImagePath))) {
-                PunchSnapshotHelper.deleteSnapshot(record.snapImagePath);
-            }
-            if (viewGate.isActive(taskViewToken)) {
-                postToActiveView(taskViewToken,
-                        () -> showPunchResult(existing, false, false));
-            } else {
-                setRecognizing(false);
-            }
-            SyncService.triggerSync(context);
-            return;
-        }
-
-        AppLogger.w(TAG, "Server accepted punch but local persistence failed: clientRecordId="
-                + safeString(record.clientRecordId));
-        InteractionLogger.logBusinessFailure(
-                InteractionLogger.GROUP_PUNCH,
-                "本地打卡资料保存失败",
-                "client_record_id=" + safeString(record.clientRecordId)
-                        + "\nemployee=" + safeString(record.empId)
-        );
-        if (viewGate.isActive(taskViewToken)) {
-            postToActiveView(taskViewToken,
-                    () -> showAcceptedPunchPersistenceFailure(record));
-        } else {
-            PunchSnapshotHelper.deleteSnapshot(record.snapImagePath);
-            setRecognizing(false);
-        }
-    }
-
-    private void showAcceptedPunchPersistenceFailure(PunchRecord record) {
-        String timeStr = new SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-                .format(new Date(record.punchTime * 1000L));
-        Employee employee = DatabaseHelper.get(requireContext()).getEmployee(record.empId);
-        String statusMessage = buildEmployeeStatusMessage(
-                record.empName,
-                record.empId,
-                "打卡成功",
-                null
-        );
-        String resultMessage = buildEmployeeResultMessage(
-                record.empName,
-                record.empId,
-                "打卡成功",
-                "打卡 " + timeStr + "\n服务器已受理，资料保存异常"
-        );
-        showResultCard(
-                statusMessage,
-                resultMessage,
-                true,
-                getEmployeeDisplayName(record.empName, record.empId),
-                record.snapImagePath,
-                employee != null ? employee.faceImageUrl : null,
-                record.snapImagePath,
-                getSuccessResultDisplayMs()
-        );
-        playPunchFeedback(record);
     }
 
     private boolean isBlank(String value) {
