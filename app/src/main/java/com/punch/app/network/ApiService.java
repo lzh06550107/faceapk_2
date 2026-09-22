@@ -119,12 +119,16 @@ public final class ApiService {
                 || punchTime <= 0L) {
             return ApiResult.failure(400, "invalid punch acceptance request");
         }
+        String token = safeString(SessionManager.get().getToken()).trim();
+        if (token.isEmpty()) {
+            return ApiResult.failure(401, "token is missing");
+        }
         Map<String, Object> body = new HashMap<>();
         body.put("client_record_id", clientRecordId.trim());
         body.put("numbers", numbers.trim());
         body.put("line_binding_code", lineBindingCode.trim());
         body.put("punch_time", punchTime);
-        body.put("token", safeString(SessionManager.get().getToken()));
+        body.put("token", token);
         return parseLineCapacity(ApiClient.post(ApiEndpoints.LINE_IS_OVER_CAPACITY, body));
     }
 
