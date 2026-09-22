@@ -2208,7 +2208,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         if (app != null) {
             renderPunchStatusSnapshot(app.getPunchStatusSnapshot());
         }
-        rebuildPunchOptions();
+        
     }
 
     @Override
