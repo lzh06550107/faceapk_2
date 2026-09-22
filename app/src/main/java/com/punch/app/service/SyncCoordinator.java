@@ -21,7 +21,6 @@ import com.punch.app.network.dto.PunchDto;
 import com.punch.app.utils.AppLogger;
 import com.punch.app.utils.Constants;
 import com.punch.app.utils.PunchSnapshotHelper;
-import com.punch.app.utils.PunchTimeResolver;
 import com.punch.app.utils.SessionManager;
 import com.punch.app.utils.UpdateManager;
 
@@ -795,7 +794,6 @@ public final class SyncCoordinator {
         if (app != null) {
             app.reportStatusEvent("\u8bbe\u5907\u914d\u7f6e\u5df2\u66f4\u65b0", PunchApplication.STATUS_LEVEL_SUCCESS);
         }
-        validatePunchWindowConfigAfterSync(app);
         if (FaceManager.get().isInitialized()) {
             FaceManager.get().refreshRuntimeConfig();
         }
@@ -805,27 +803,6 @@ public final class SyncCoordinator {
                 "本地配置已更新"
         );
         return true;
-    }
-
-    private void validatePunchWindowConfigAfterSync(PunchApplication app) {
-        PunchTimeResolver.WindowValidationResult validation =
-                PunchTimeResolver.validatePunchTimeWindows(
-                        SessionManager.get().getCurrentTeamTimeRanges(),
-                        SessionManager.get().getPunchTimeWindowMinutes()
-                );
-        if (validation.valid) {
-            return;
-        }
-        String message = validation.buildMessage();
-        AppLogger.w(TAG, "Punch time window conflict: " + message);
-        InteractionLogger.logBusinessFailure(
-                InteractionLogger.GROUP_DEVICE_CONFIG,
-                "打卡时间范围配置冲突",
-                message
-        );
-        if (app != null) {
-            app.reportStatusEvent(message, PunchApplication.STATUS_LEVEL_ERROR);
-        }
     }
 
     private void applyDeviceConfig(DeviceDto.DeviceConfigData data, boolean preserveLocalBindings) {
