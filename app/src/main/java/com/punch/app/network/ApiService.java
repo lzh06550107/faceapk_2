@@ -129,7 +129,10 @@ public final class ApiService {
     }
 
     public static ApiResult<PunchDto.PunchPushData> pushPunch(PunchRecord punch) {
-        if (punch == null || punch.teamBindingId <= 0) {
+        if (punch == null || safeString(punch.clientRecordId).trim().isEmpty()) {
+            return ApiResult.failure(400, "client_record_id is missing");
+        }
+        if (punch.teamBindingId <= 0) {
             return ApiResult.failure(400, "team_binding is missing");
         }
         return parsePunchPush(ApiClient.post(ApiEndpoints.PUNCH, buildPunchBody(punch)));
