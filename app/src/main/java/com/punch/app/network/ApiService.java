@@ -109,6 +109,25 @@ public final class ApiService {
         return emptyResult(ApiClient.post(ApiEndpoints.EVENT_RESULT, body));
     }
 
+    public static ApiResult<PunchDto.LineCapacityData> acceptLinePunch(String clientRecordId,
+                                                                       String numbers,
+                                                                       String lineBindingCode,
+                                                                       long punchTime) {
+        if (safeString(clientRecordId).trim().isEmpty()
+                || safeString(numbers).trim().isEmpty()
+                || safeString(lineBindingCode).trim().isEmpty()
+                || punchTime <= 0L) {
+            return ApiResult.failure(400, "invalid punch acceptance request");
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("client_record_id", clientRecordId.trim());
+        body.put("numbers", numbers.trim());
+        body.put("line_binding_code", lineBindingCode.trim());
+        body.put("punch_time", punchTime);
+        body.put("token", safeString(SessionManager.get().getToken()));
+        return parseLineCapacity(ApiClient.post(ApiEndpoints.LINE_IS_OVER_CAPACITY, body));
+    }
+
     public static ApiResult<PunchDto.PunchPushData> pushPunch(PunchRecord punch) {
         if (punch == null || punch.teamBindingId <= 0) {
             return ApiResult.failure(400, "team_binding is missing");
@@ -416,6 +435,20 @@ public final class ApiService {
                 result.changeItems.add(changeItem);
             }
         }
+        return success(response, result);
+    }
+
+    private static ApiResult<PunchDto.LineCapacityData> parseLineCapacity(ApiResponse response) {
+        JsonObject data = getDataObject(response);
+        if (data == null) {
+            return failure(response);
+        }
+        Boolean isOverCapacity = getBoolean(data, "is_over_capacity");
+        if (isOverCapacity == null) {
+            return invalidResponse(response);
+        }
+        PunchDto.LineCapacityData result = new PunchDto.LineCapacityData();
+        result.isOverCapacity = isOverCapacity;
         return success(response, result);
     }
 
