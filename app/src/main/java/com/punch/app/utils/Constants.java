@@ -70,7 +70,6 @@ public class Constants {
     public static final String KEY_RECOGNITION_DISTANCE_MODE = "recognition_distance_mode";
     public static final String KEY_MASK_DETECT = "mask_detect";
     public static final String KEY_RECOGNITION_TIMEOUT_SECONDS = "recognition_timeout_seconds";
-    public static final String KEY_PUNCH_TIME_WINDOW_MINUTES = "punch_time_window_minutes";
     public static final String KEY_FAST_PUNCH_ENABLED = "fast_punch_enabled";
     public static final String KEY_SHOW_PUNCH_RESULT_CARD = "show_punch_result_card";
     public static final String KEY_PUNCH_RESULT_DISPLAY_MS = "punch_result_display_ms";
@@ -78,7 +77,6 @@ public class Constants {
     public static final String KEY_PUNCH_SPEECH_RATE = "punch_speech_rate";
     public static final String KEY_RECOGNITION_FRAME_INTERVAL_MS = "recognition_frame_interval_ms";
     public static final String KEY_SUCCESS_COOLDOWN_MS = "success_cooldown_ms";
-    public static final String KEY_OVERTIME_SIGN_OUT_OPTIONS = "overtime_sign_out_options";
     public static final String KEY_CAMERA_FACING = "camera_facing";
     public static final String KEY_SOUND_ENABLED = "sound_enabled";
     public static final String KEY_ACTIVATION_MODE = "activation_mode";
@@ -130,7 +128,6 @@ public class Constants {
     public static final String DEFAULT_DISTANCE_MODE = DISTANCE_MODE_STANDARD;
     public static final boolean DEFAULT_MASK_DETECT = false;
     public static final int DEFAULT_RECOGNITION_TIMEOUT_SECONDS = 5;
-    public static final int DEFAULT_PUNCH_TIME_WINDOW_MINUTES = 20;
     public static final boolean DEFAULT_FAST_PUNCH_ENABLED = true;
     public static final boolean DEFAULT_SHOW_PUNCH_RESULT_CARD = false;
     public static final int DEFAULT_PUNCH_RESULT_DISPLAY_MS = 3000;
