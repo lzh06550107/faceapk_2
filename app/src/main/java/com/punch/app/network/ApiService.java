@@ -547,6 +547,7 @@ public final class ApiService {
 
     private static Map<String, Object> buildPunchBody(PunchRecord punch) {
         Map<String, Object> body = new HashMap<>();
+        body.put("client_record_id", safeString(punch.clientRecordId));
         body.put("numbers", safeString(punch.empId));
         body.put("team_binding", punch.teamBindingId);
         body.put("line_binding_code", safeString(punch.lineCode));
