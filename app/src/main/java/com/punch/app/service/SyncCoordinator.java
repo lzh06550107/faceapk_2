@@ -891,6 +891,7 @@ public final class SyncCoordinator {
                     punch.clientRecordId,
                     punch.empId,
                     punch.lineCode,
+                    punch.teamBindingId,
                     punch.punchTime
             );
 

@@ -1787,6 +1787,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 record.clientRecordId,
                 record.empId,
                 record.lineCode,
+                record.teamBindingId,
                 record.punchTime
         );
 

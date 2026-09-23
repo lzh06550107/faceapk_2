@@ -39,6 +39,7 @@ public class PunchApiTest extends ApiTestSupport {
                 "PDEVICE001_01KXYZ",
                 "EMP001",
                 "LINE01",
+                23,
                 1782424800L
         );
 
@@ -52,9 +53,9 @@ public class PunchApiTest extends ApiTestSupport {
         assertTrue(body.contains("\"client_record_id\":\"PDEVICE001_01KXYZ\""));
         assertTrue(body.contains("\"numbers\":\"EMP001\""));
         assertTrue(body.contains("\"line_binding_code\":\"LINE01\""));
+        assertTrue(body.contains("\"team_binding\":23"));
         assertTrue(body.contains("\"punch_time\":1782424800"));
-        assertTrue(body.contains("\"token\":\"token-abc\""));
-        assertFalse(body.contains("\"team_binding\""));
+        assertFalse(body.contains("\"token\""));
         assertFalse(body.contains("\"snap_image\""));
     }
 
@@ -68,6 +69,7 @@ public class PunchApiTest extends ApiTestSupport {
                 "PDEVICE001_01KXYZ",
                 "EMP001",
                 "LINE01",
+                23,
                 1782424800L
         );
 
@@ -80,7 +82,9 @@ public class PunchApiTest extends ApiTestSupport {
         assertEquals("/v3/handheld/line/isOverCapacity", request.url().encodedPath());
         String body = interceptor.takeBody();
         assertTrue(body.contains("\"client_record_id\":\"PDEVICE001_01KXYZ\""));
+        assertTrue(body.contains("\"team_binding\":23"));
         assertTrue(body.contains("\"punch_time\":1782424800"));
+        assertFalse(body.contains("\"token\""));
     }
 
     @Test
@@ -93,6 +97,7 @@ public class PunchApiTest extends ApiTestSupport {
                 "PDEVICE001_01KXYZ",
                 "EMP001",
                 "LINE01",
+                23,
                 1782424800L
         );
 
@@ -110,6 +115,7 @@ public class PunchApiTest extends ApiTestSupport {
                 "PDEVICE001_01KXYZ",
                 "EMP001",
                 "LINE01",
+                23,
                 1782424800L
         );
 
@@ -119,11 +125,29 @@ public class PunchApiTest extends ApiTestSupport {
     }
 
     @Test
+    public void acceptLinePunch_shouldFailWhenTeamBindingMissing() {
+        SessionManager.get().saveToken("token-abc", 1893456000L);
+
+        ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
+                "PDEVICE001_01KXYZ",
+                "EMP001",
+                "LINE01",
+                0,
+                1782424800L
+        );
+
+        assertFalse(result.success);
+        assertEquals(400, result.code);
+        assertEquals(0, interceptor.getRequestCount());
+    }
+
+    @Test
     public void acceptLinePunch_shouldFailWhenTokenMissing() {
         ApiResult<PunchDto.LineCapacityData> result = ApiService.acceptLinePunch(
                 "PDEVICE001_01KXYZ",
                 "EMP001",
                 "LINE01",
+                23,
                 1782424800L
         );
 
@@ -140,6 +164,7 @@ public class PunchApiTest extends ApiTestSupport {
                 "PDEVICE001_01KXYZ",
                 "EMP001",
                 "LINE01",
+                23,
                 1782424800L
         );
 
@@ -156,6 +181,7 @@ public class PunchApiTest extends ApiTestSupport {
                 "PDEVICE001_01KXYZ",
                 "EMP001",
                 "LINE01",
+                23,
                 1782424800L
         );
 

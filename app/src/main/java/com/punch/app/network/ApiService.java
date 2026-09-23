@@ -121,10 +121,12 @@ public final class ApiService {
     public static ApiResult<PunchDto.LineCapacityData> acceptLinePunch(String clientRecordId,
                                                                        String numbers,
                                                                        String lineBindingCode,
+                                                                       int teamBindingId,
                                                                        long punchTime) {
         if (safeString(clientRecordId).trim().isEmpty()
                 || safeString(numbers).trim().isEmpty()
                 || safeString(lineBindingCode).trim().isEmpty()
+                || teamBindingId <= 0
                 || punchTime <= 0L) {
             return ApiResult.failure(400, "invalid punch acceptance request");
         }
@@ -136,8 +138,8 @@ public final class ApiService {
         body.put("client_record_id", clientRecordId.trim());
         body.put("numbers", numbers.trim());
         body.put("line_binding_code", lineBindingCode.trim());
+        body.put("team_binding", teamBindingId);
         body.put("punch_time", punchTime);
-        body.put("token", token);
 
         ApiResponse response = null;
         for (int attempt = 1; attempt <= PUNCH_ACCEPT_MAX_ATTEMPTS; attempt++) {
