@@ -39,6 +39,8 @@ import java.util.Set;
 public final class WifiConfigDialogHelper {
     private static final long WIFI_CONNECT_TIMEOUT_MS = 15_000L;
     private static final long WIFI_CONNECT_POLL_INTERVAL_MS = 1_000L;
+    private static final long WIFI_SCAN_ENABLE_TIMEOUT_MS = 10_000L;
+    private static final long WIFI_SCAN_ENABLE_POLL_INTERVAL_MS = 500L;
 
     private final AppCompatActivity activity;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -48,6 +50,7 @@ public final class WifiConfigDialogHelper {
     private AutoCompleteTextView pendingWifiScanSsidInput;
     private AlertDialog currentDialog;
     private Runnable wifiConnectCheckRunnable;
+    private Runnable wifiScanEnableCheckRunnable;
     private boolean manualWifiConfigurationInProgress;
 
     public WifiConfigDialogHelper(AppCompatActivity activity) {
@@ -128,6 +131,7 @@ public final class WifiConfigDialogHelper {
         dialog.setOnDismissListener(d -> {
             currentDialog = null;
             cancelPendingWifiConnectCheck();
+            cancelPendingWifiEnableCheck();
             finishManualWifiConfiguration("dialog_dismissed");
             unregisterWifiScanReceiver();
             clearPendingWifiScan();
@@ -141,6 +145,7 @@ public final class WifiConfigDialogHelper {
 
     public void onDestroy() {
         cancelPendingWifiConnectCheck();
+        cancelPendingWifiEnableCheck();
         finishManualWifiConfiguration("helper_destroyed");
         unregisterWifiScanReceiver();
         clearPendingWifiScan();
@@ -158,7 +163,7 @@ public final class WifiConfigDialogHelper {
             @Override
             public void onReceive(Context context, Intent intent) {
                 unregisterWifiScanReceiver();
-                bindWifiScanResults(wifiManager, adapter, ssidInput);
+                bindWifiScanResults(wifiManager, adapter, ssidInput, false);
             }
         };
         ContextCompat.registerReceiver(
@@ -179,8 +184,7 @@ public final class WifiConfigDialogHelper {
         }
         if (!started) {
             unregisterWifiScanReceiver();
-            bindWifiScanResults(wifiManager, adapter, ssidInput);
-            Toast.makeText(activity, "扫描请求未启动，已显示缓存结果", Toast.LENGTH_SHORT).show();
+            bindWifiScanResults(wifiManager, adapter, ssidInput, true);
             return;
         }
         Toast.makeText(activity, "正在搜索 Wi-Fi...", Toast.LENGTH_SHORT).show();
@@ -188,7 +192,8 @@ public final class WifiConfigDialogHelper {
 
     private void bindWifiScanResults(WifiManager wifiManager,
                                      ArrayAdapter<String> adapter,
-                                     AutoCompleteTextView ssidInput) {
+                                     AutoCompleteTextView ssidInput,
+                                     boolean cachedFallback) {
         List<ScanResult> results;
         try {
             results = wifiManager.getScanResults();
@@ -209,13 +214,20 @@ public final class WifiConfigDialogHelper {
         adapter.addAll(ssids);
         adapter.notifyDataSetChanged();
         if (ssids.isEmpty()) {
-            Toast.makeText(activity, "未搜索到 Wi-Fi，可手动输入 SSID", Toast.LENGTH_LONG).show();
+            String message = cachedFallback
+                    ? "系统暂时未允许主动扫描，且暂无缓存结果，请稍后重试"
+                    : "未搜索到 Wi-Fi，可手动输入 SSID";
+            Toast.makeText(activity, message, Toast.LENGTH_LONG).show();
             return;
         }
         ssidInput.requestFocus();
         ssidInput.post(() -> {
             ssidInput.showDropDown();
-            Toast.makeText(activity, "SSID 搜索成功", Toast.LENGTH_SHORT).show();
+            Toast.makeText(
+                    activity,
+                    cachedFallback ? "已显示最近的 Wi-Fi 列表" : "SSID 搜索成功",
+                    Toast.LENGTH_SHORT
+            ).show();
         });
     }
 
@@ -327,8 +339,93 @@ public final class WifiConfigDialogHelper {
             showEnableLocationDialog();
             return;
         }
+        ensureWifiEnabledThenScan(adapter, ssidInput);
+    }
+
+    private void ensureWifiEnabledThenScan(ArrayAdapter<String> adapter,
+                                           AutoCompleteTextView ssidInput) {
+        WifiManager wifiManager = getWifiManager();
+        if (wifiManager == null) {
+            clearPendingWifiScan();
+            Toast.makeText(activity, "Wi-Fi 服务不可用", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        boolean enabled;
+        try {
+            enabled = wifiManager.isWifiEnabled();
+        } catch (SecurityException e) {
+            clearPendingWifiScan();
+            Toast.makeText(activity, "无法读取 Wi-Fi 状态：权限不足", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if (enabled) {
+            clearPendingWifiScan();
+            scanWifiNetworks(adapter, ssidInput);
+            return;
+        }
+
+        boolean enableSubmitted;
+        try {
+            enableSubmitted = wifiManager.setWifiEnabled(true);
+        } catch (SecurityException e) {
+            clearPendingWifiScan();
+            Toast.makeText(activity, "无法开启 Wi-Fi：权限不足", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if (!enableSubmitted) {
+            clearPendingWifiScan();
+            Toast.makeText(activity, "Wi-Fi 未开启，请先开启 Wi-Fi 后重试", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        cancelPendingWifiEnableCheck();
+        Toast.makeText(activity, "正在开启 Wi-Fi...", Toast.LENGTH_SHORT).show();
+        final long startedAt = System.currentTimeMillis();
+        wifiScanEnableCheckRunnable = new Runnable() {
+            @Override
+            public void run() {
+                WifiManager currentWifiManager = getWifiManager();
+                if (currentWifiManager == null) {
+                    finishWifiEnableForScanFailure("Wi-Fi 服务不可用");
+                    return;
+                }
+
+                try {
+                    if (currentWifiManager.isWifiEnabled()) {
+                        cancelPendingWifiEnableCheck();
+                        clearPendingWifiScan();
+                        scanWifiNetworks(adapter, ssidInput);
+                        return;
+                    }
+                } catch (SecurityException e) {
+                    finishWifiEnableForScanFailure("无法读取 Wi-Fi 状态：权限不足");
+                    return;
+                }
+
+                if (System.currentTimeMillis() - startedAt >= WIFI_SCAN_ENABLE_TIMEOUT_MS) {
+                    finishWifiEnableForScanFailure("Wi-Fi 开启超时，请稍后重试");
+                    return;
+                }
+                mainHandler.postDelayed(this, WIFI_SCAN_ENABLE_POLL_INTERVAL_MS);
+            }
+        };
+        mainHandler.postDelayed(wifiScanEnableCheckRunnable, WIFI_SCAN_ENABLE_POLL_INTERVAL_MS);
+    }
+
+    private void finishWifiEnableForScanFailure(String message) {
+        cancelPendingWifiEnableCheck();
         clearPendingWifiScan();
-        scanWifiNetworks(adapter, ssidInput);
+        Toast.makeText(activity, message, Toast.LENGTH_LONG).show();
+    }
+
+    private void cancelPendingWifiEnableCheck() {
+        if (wifiScanEnableCheckRunnable != null) {
+            mainHandler.removeCallbacks(wifiScanEnableCheckRunnable);
+            wifiScanEnableCheckRunnable = null;
+        }
     }
 
     private boolean isLocationServiceEnabled() {
@@ -407,8 +504,7 @@ public final class WifiConfigDialogHelper {
         }
         ArrayAdapter<String> adapter = pendingWifiScanAdapter;
         AutoCompleteTextView ssidInput = pendingWifiScanSsidInput;
-        clearPendingWifiScan();
-        scanWifiNetworks(adapter, ssidInput);
+        ensureWifiEnabledThenScan(adapter, ssidInput);
     }
 
     private void waitForWifiConnection(String ssid, String password, Button connectButton) {
