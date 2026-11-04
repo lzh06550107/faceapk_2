@@ -954,7 +954,7 @@ public final class SyncCoordinator {
         }
     }
 
-    private static String punchAcceptanceGroupKey(PunchRecord punch) {
+    private String punchAcceptanceGroupKey(PunchRecord punch) {
         return safeString(punch == null ? null : punch.lineCode).trim()
                 + "#"
                 + (punch == null ? 0 : punch.teamBindingId);
