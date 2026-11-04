@@ -1,20 +1,18 @@
 package com.punch.app.service;
 
-/** Recovery policy for the server-side punch acceptance step. */
+/** Recovery policy for punch acceptance attempts that did not yield a final boolean decision. */
 public final class PunchAcceptancePolicy {
     private PunchAcceptancePolicy() {
     }
 
     /**
-     * Keep the durable ACCEPTING intent whenever the response is not a clearly definitive
-     * client/business rejection. Transport, authentication, throttling and server failures may
-     * have happened after the server committed, so they must be retried with the same
-     * client_record_id rather than creating a new punch.
+     * HTTP/transport status alone never decides whether a punch is accepted.
+     *
+     * <p>The caller may finish ACCEPTING only after parsing a valid
+     * {@code is_over_capacity=true/false}. Any response code reaching this policy therefore
+     * remains recoverable and must keep the durable ACCEPTING intent.</p>
      */
     public static boolean shouldRetryLater(int responseCode) {
-        return responseCode != 400
-                && responseCode != 403
-                && responseCode != 404
-                && responseCode != 422;
+        return true;
     }
 }

@@ -1109,9 +1109,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         List<PunchRecord> list = new ArrayList<>();
         Cursor c = getReadableDatabase().rawQuery(
                 "SELECT * FROM punch_records " +
-                        "WHERE punch_date=? AND line_code=? AND punch_state<>? " +
+                        "WHERE punch_date=? AND line_code=? " +
                         "ORDER BY punch_time DESC",
-                new String[]{date, lineCode, PunchRecord.STATE_ACCEPTING});
+                new String[]{date, lineCode});
         try { while (c.moveToNext()) list.add(mapPunch(c)); }
         finally { c.close(); }
         return list;
@@ -1348,6 +1348,37 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
     public List<SyncQueueItem> getSyncQueue(String action) {
         return querySyncQueue(action, null, 0);
+    }
+
+    /**
+     * Returns durable ACCEPTING work in original business-time order.
+     *
+     * <p>No LIMIT is applied here: SyncCoordinator limits actual network requests while still
+     * scanning past records from a blocked line+team group so unrelated groups cannot starve.</p>
+     */
+    public List<SyncQueueItem> getPendingPunchAcceptanceQueue() {
+        List<SyncQueueItem> list = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT q.* FROM sync_queue q " +
+                        "INNER JOIN punch_records p ON p.client_record_id=q.record_id " +
+                        "WHERE q.action=? AND p.punch_state=? AND p.is_synced=0 " +
+                        "ORDER BY p.punch_time ASC, q.created_at ASC, q.id ASC",
+                new String[]{Constants.ACTION_PUNCH_ACCEPT, PunchRecord.STATE_ACCEPTING});
+        try {
+            while (c.moveToNext()) {
+                SyncQueueItem item = new SyncQueueItem();
+                item.id = c.getInt(c.getColumnIndexOrThrow("id"));
+                item.recordId = c.getString(c.getColumnIndexOrThrow("record_id"));
+                item.action = c.getString(c.getColumnIndexOrThrow("action"));
+                item.retryCount = c.getInt(c.getColumnIndexOrThrow("retry_count"));
+                item.createdAt = c.getLong(c.getColumnIndexOrThrow("created_at"));
+                item.lastRetry = c.getLong(c.getColumnIndexOrThrow("last_retry"));
+                list.add(item);
+            }
+        } finally {
+            c.close();
+        }
+        return list;
     }
 
     public List<SyncQueueItem> getSyncQueue(String action, int limit) {

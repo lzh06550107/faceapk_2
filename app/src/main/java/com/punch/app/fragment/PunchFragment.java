@@ -52,7 +52,6 @@ import com.punch.app.network.ApiResult;
 import com.punch.app.network.ApiService;
 import com.punch.app.network.InteractionLogger;
 import com.punch.app.network.dto.PunchDto;
-import com.punch.app.service.PunchAcceptancePolicy;
 import com.punch.app.service.PunchDepartureLatch;
 import com.punch.app.service.PunchPersistence;
 import com.punch.app.service.PunchEmployeeEligibility;
@@ -1512,14 +1511,6 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                     setStatus("人脸资料已更新，正在同步，请稍后重试"));
             return;
         }
-        if (db.hasPendingPunchAcceptanceForEmployee(emp.id)) {
-            departureLatch.latch(emp.id);
-            resetPendingMatch();
-            postToActiveView(taskViewToken, () ->
-                    setStatus("上次打卡仍在确认中，请勿重复打卡"));
-            return;
-        }
-
         String clientRecordId = "P" + SessionManager.get().getDeviceId() + "_" + UlidGenerator.generate();
         long punchTime = matchedAt / 1000L;
         setRecognizing(true);
@@ -1803,31 +1794,21 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         DatabaseHelper db = DatabaseHelper.get(context);
 
         if (acceptance == null || !acceptance.success || acceptance.data == null) {
-            int code = acceptance == null ? -1 : acceptance.code;
             String detail = acceptance != null && !isBlank(acceptance.message)
                     ? acceptance.message
-                    : "服务器连接失败";
+                    : "服务器暂未返回明确打卡结果";
 
-            if (PunchAcceptancePolicy.shouldRetryLater(code)) {
-                departureLatch.latch(emp.id);
-                if (viewGate.isActive(taskViewToken)) {
-                    postToActiveView(taskViewToken,
-                            () -> showPunchAcceptancePending(emp, snapshot, detail));
-                } else {
-                    setRecognizing(false);
-                }
-                SyncService.triggerSync(context);
-                return;
-            }
-
-            db.discardPunchIntent(record.clientRecordId);
+            // Only a valid is_over_capacity=true/false response may finish ACCEPTING.
+            // HTTP status codes, transport failures and malformed responses all remain durable
+            // pending punches and are retried later with the same client_record_id/punch_time.
+            departureLatch.latch(emp.id);
             if (viewGate.isActive(taskViewToken)) {
                 postToActiveView(taskViewToken,
-                        () -> showPunchAcceptanceFailure(emp, detail, snapshot));
+                        () -> showPunchAcceptancePending(emp, snapshot, detail));
             } else {
-                PunchSnapshotHelper.deleteSnapshot(snapshot.path);
                 setRecognizing(false);
             }
+            SyncService.triggerSync(context);
             return;
         }
 
@@ -1883,7 +1864,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private void showPunchAcceptancePending(Employee emp,
                                             PunchSnapshotHelper.Snapshot snapshot,
                                             String detail) {
-        String message = "网络异常，服务器结果正在自动确认";
+        String message = "打卡已离线记录，联网后自动确认";
         if (!isBlank(detail)) {
             AppLogger.w(TAG, "Punch acceptance pending: employee=" + safeString(emp.id)
                     + ", detail=" + safeString(detail));
@@ -1895,12 +1876,12 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                         + "\nreason=" + safeString(detail)
         );
         showResultCard(
-                buildEmployeeStatusMessage(emp.name, emp.id, "打卡确认中", null),
+                buildEmployeeStatusMessage(emp.name, emp.id, "打卡待确认", null),
                 buildEmployeeResultMessage(
                         emp.name,
                         emp.id,
-                        "打卡确认中",
-                        message + "\n请勿重复打卡"),
+                        "打卡待确认",
+                        message),
                 false,
                 getEmployeeDisplayName(emp.name, emp.id),
                 snapshot.path,

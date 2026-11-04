@@ -27,9 +27,11 @@ import com.punch.app.utils.UpdateManager;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -849,13 +851,14 @@ public final class SyncCoordinator {
 
     private void syncPendingPunchAcceptances(Context context) {
         DatabaseHelper db = DatabaseHelper.get(context);
-        List<SyncQueueItem> queue = db.getSyncQueue(
-                Constants.ACTION_PUNCH_ACCEPT,
-                Constants.PUNCH_BATCH_SIZE);
+        List<SyncQueueItem> queue = db.getPendingPunchAcceptanceQueue();
         if (queue.isEmpty()) {
             return;
         }
 
+        // Records are globally ordered by original punch_time. A non-final result blocks only
+        // later records in the same line+team business scope; unrelated scopes may continue.
+        Set<String> blockedGroups = new HashSet<>();
         long batchStartedAt = System.nanoTime();
         int processed = 0;
         for (SyncQueueItem item : queue) {
@@ -868,7 +871,6 @@ public final class SyncCoordinator {
                     Constants.PUNCH_SYNC_TIME_BUDGET_MS)) {
                 break;
             }
-            processed += 1;
 
             PunchRecord punch = db.getPunchRecord(item.recordId);
             if (punch == null) {
@@ -879,6 +881,12 @@ public final class SyncCoordinator {
                 db.removeSyncQueueItem(item.id);
                 continue;
             }
+
+            String groupKey = punchAcceptanceGroupKey(punch);
+            if (blockedGroups.contains(groupKey)) {
+                continue;
+            }
+            processed += 1;
 
             InteractionLogger.logBusiness(
                     InteractionLogger.GROUP_PUNCH,
@@ -899,6 +907,14 @@ public final class SyncCoordinator {
                 if (acceptance.data.isOverCapacity) {
                     if (db.discardPunchIntent(punch.clientRecordId)) {
                         PunchSnapshotHelper.deleteSnapshot(punch.snapImagePath);
+                    } else {
+                        blockedGroups.add(groupKey);
+                        InteractionLogger.logBusinessFailure(
+                                InteractionLogger.GROUP_PUNCH,
+                                "容量拒绝后本地清理失败",
+                                "client_record_id=" + safeString(punch.clientRecordId)
+                        );
+                        continue;
                     }
                     InteractionLogger.logBusinessFailure(
                             InteractionLogger.GROUP_PUNCH,
@@ -909,12 +925,13 @@ public final class SyncCoordinator {
                 }
 
                 if (!db.markPunchAcceptedAndQueueUpload(punch.clientRecordId)) {
+                    blockedGroups.add(groupKey);
                     InteractionLogger.logBusinessFailure(
                             InteractionLogger.GROUP_PUNCH,
                             "待确认打卡本地状态推进失败",
                             "client_record_id=" + safeString(punch.clientRecordId)
                     );
-                    break;
+                    continue;
                 }
                 InteractionLogger.logBusiness(
                         InteractionLogger.GROUP_PUNCH,
@@ -926,28 +943,21 @@ public final class SyncCoordinator {
 
             int code = acceptance == null ? -1 : acceptance.code;
             String reason = acceptance == null ? "" : safeString(acceptance.message);
-            if (PunchAcceptancePolicy.shouldRetryLater(code)) {
-                InteractionLogger.logBusinessFailure(
-                        InteractionLogger.GROUP_PUNCH,
-                        "待确认打卡仍无法确认",
-                        "client_record_id=" + safeString(punch.clientRecordId)
-                                + "\ncode=" + code
-                                + "\nreason=" + reason
-                );
-                break;
-            }
-
-            if (db.discardPunchIntent(punch.clientRecordId)) {
-                PunchSnapshotHelper.deleteSnapshot(punch.snapImagePath);
-            }
+            blockedGroups.add(groupKey);
             InteractionLogger.logBusinessFailure(
                     InteractionLogger.GROUP_PUNCH,
-                    "待确认打卡被服务端明确拒绝",
+                    "待确认打卡仍无法确认",
                     "client_record_id=" + safeString(punch.clientRecordId)
                             + "\ncode=" + code
                             + "\nreason=" + reason
             );
         }
+    }
+
+    private static String punchAcceptanceGroupKey(PunchRecord punch) {
+        return safeString(punch == null ? null : punch.lineCode).trim()
+                + "#"
+                + (punch == null ? 0 : punch.teamBindingId);
     }
 
     private void cleanupSyncedSnapshotLater(String snapshotPath) {

@@ -496,7 +496,7 @@ public class RecordsFragment extends Fragment {
             applyMode(false);
             tvTotalLabel.setText("\u672c\u5730\u8bb0\u5f55");
             tvClockedLabel.setText("\u5df2\u540c\u6b65");
-            tvUnclockedLabel.setText("\u5f85\u540c\u6b65");
+            tvUnclockedLabel.setText("待处理");
             tvTotalCount.setText(String.valueOf(filtered.size()));
             tvClockedCount.setText(String.valueOf(finalSyncedCount));
             tvUnclockedCount.setText(String.valueOf(finalPendingCount));

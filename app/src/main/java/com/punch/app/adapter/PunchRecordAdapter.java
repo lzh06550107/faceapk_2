@@ -74,8 +74,16 @@ public class PunchRecordAdapter extends RecyclerView.Adapter<PunchRecordAdapter.
             holder.tvType.setBackgroundColor(signIn ? 0xFF0D5FA8 : 0xFF2E7D32);
         }
 
-        holder.tvSync.setText(record.isSynced == 1 ? "已同步" : "待同步");
-        holder.tvSync.setTextColor(record.isSynced == 1 ? 0xFF2E7D32 : 0xFFEF6C00);
+        if (PunchRecord.STATE_ACCEPTING.equals(record.punchState)) {
+            holder.tvSync.setText("待确认");
+            holder.tvSync.setTextColor(0xFFEF6C00);
+        } else if (record.isSynced == 1 || PunchRecord.STATE_SYNCED.equals(record.punchState)) {
+            holder.tvSync.setText("已同步");
+            holder.tvSync.setTextColor(0xFF2E7D32);
+        } else {
+            holder.tvSync.setText("待同步");
+            holder.tvSync.setTextColor(0xFFEF6C00);
+        }
 
         if (!TextUtils.isEmpty(record.shiftName)) {
             holder.tvExtra.setVisibility(View.VISIBLE);
