@@ -38,6 +38,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 
@@ -53,6 +54,7 @@ import com.punch.app.network.ApiService;
 import com.punch.app.network.InteractionLogger;
 import com.punch.app.network.dto.PunchDto;
 import com.punch.app.service.PunchDepartureLatch;
+import com.punch.app.service.PunchEntryLineReminder;
 import com.punch.app.service.PunchPersistence;
 import com.punch.app.service.PunchEmployeeEligibility;
 import com.punch.app.service.SyncService;
@@ -172,6 +174,9 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     private long pendingMatchLastAt = 0L;
     private final PunchDepartureLatch departureLatch =
             new PunchDepartureLatch(DEPARTURE_CLEAR_NO_FACE_FRAMES);
+    @Nullable
+    private AlertDialog punchEntryLineReminderDialog;
+    private boolean punchEntryLineReminderShown;
 
     @Nullable
     @Override
@@ -1387,6 +1392,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
     public void onHiddenChanged(boolean hidden) {
         super.onHiddenChanged(hidden);
         if (hidden) {
+            dismissPunchEntryLineReminder();
+            punchEntryLineReminderShown = false;
             punchActive = false;
             setPunchEnabled(false);
             waitingFirstPreviewFrame = false;
@@ -1405,7 +1412,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             if (tvLine != null) {
                 refreshBindingHeader();
             }
-            }
+            maybeShowPunchEntryLineReminder();
+        }
     }
 
 
@@ -2266,6 +2274,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 getResources().getBoolean(R.bool.camera_face_soak_auto_enable)));
         updateScreenAwakeState();
         refreshBindingHeader();
+        maybeShowPunchEntryLineReminder();
         PunchApplication app = PunchApplication.get();
         if (app != null) {
             renderPunchStatusSnapshot(app.getPunchStatusSnapshot());
@@ -2275,6 +2284,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
 
     @Override
     public void onPause() {
+        dismissPunchEntryLineReminder();
+        punchEntryLineReminderShown = false;
         punchActive = false;
         setPunchEnabled(false);
         waitingFirstPreviewFrame = false;
@@ -2290,6 +2301,49 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             setPreviewFullscreen(false);
         }
         releaseCamera();
+    }
+
+    private void maybeShowPunchEntryLineReminder() {
+        if (!isAdded()
+                || getView() == null
+                || isHidden()
+                || punchEntryLineReminderShown
+                || punchEntryLineReminderDialog != null) {
+            return;
+        }
+
+        punchEntryLineReminderShown = true;
+        String message = PunchEntryLineReminder.buildMessage(
+                SessionManager.get().getLineName(),
+                SessionManager.get().getLineCode(),
+                SessionManager.get().getTeamBindingName()
+        );
+
+        AlertDialog dialog = new AlertDialog.Builder(requireContext())
+                .setTitle("请确认当前打卡线体")
+                .setMessage(message)
+                .setPositiveButton("我知道了", (d, which) -> {
+                    if (punchEntryLineReminderDialog == d) {
+                        punchEntryLineReminderDialog = null;
+                    }
+                })
+                .setCancelable(false)
+                .create();
+        punchEntryLineReminderDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (punchEntryLineReminderDialog == d) {
+                punchEntryLineReminderDialog = null;
+            }
+        });
+        dialog.show();
+    }
+
+    private void dismissPunchEntryLineReminder() {
+        AlertDialog dialog = punchEntryLineReminderDialog;
+        punchEntryLineReminderDialog = null;
+        if (dialog != null && dialog.isShowing()) {
+            dialog.dismiss();
+        }
     }
 
     private void refreshBindingHeader() {
@@ -2337,6 +2391,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
 
     @Override
     public void onDestroyView() {
+        dismissPunchEntryLineReminder();
+        punchEntryLineReminderShown = false;
         viewGate.close();
         uiHandler.removeCallbacksAndMessages(null);
         punchActive = false;

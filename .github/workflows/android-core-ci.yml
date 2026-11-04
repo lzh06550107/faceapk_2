@@ -5,6 +5,7 @@ on:
     branches:
       - feature/android12-platform-permission-minimal
       - change-daka-logic
+      - feature/punch-entry-line-reminder
   pull_request:
   workflow_dispatch:
 
