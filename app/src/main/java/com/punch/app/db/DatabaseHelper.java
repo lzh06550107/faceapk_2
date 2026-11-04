@@ -1268,13 +1268,16 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
-            db.delete("sync_queue", "record_id=?", new String[]{recordId});
             int deleted = db.delete(
                     "punch_records",
                     "client_record_id=? AND punch_state=?",
                     new String[]{recordId, PunchRecord.STATE_ACCEPTING});
+            if (deleted <= 0) {
+                return false;
+            }
+            db.delete("sync_queue", "record_id=?", new String[]{recordId});
             db.setTransactionSuccessful();
-            return deleted > 0;
+            return true;
         } finally {
             db.endTransaction();
         }
