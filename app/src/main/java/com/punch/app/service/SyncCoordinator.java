@@ -1,6 +1,7 @@
 package com.punch.app.service;
 
 import android.content.Context;
+import android.content.Intent;
 
 import com.punch.app.PunchApplication;
 import com.punch.app.db.DatabaseHelper;
@@ -714,12 +715,19 @@ public final class SyncCoordinator {
                 } while (pendingPunchTrigger.get() != null);
             } finally {
                 punchSyncQueued.set(false);
+                notifyPunchSyncStateChanged(appContext);
                 SyncTrigger nextTrigger = pendingPunchTrigger.get();
                 if (nextTrigger != null) {
                     enqueuePunchSync(appContext, nextTrigger);
                 }
             }
         });
+    }
+
+    private void notifyPunchSyncStateChanged(Context context) {
+        Intent intent = new Intent(SyncService.ACTION_PUNCH_SYNC_STATE_CHANGED);
+        intent.setPackage(context.getPackageName());
+        context.sendBroadcast(intent);
     }
 
     private void syncPunches(Context context, SyncTrigger trigger) {

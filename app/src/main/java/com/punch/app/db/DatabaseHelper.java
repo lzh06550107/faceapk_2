@@ -1452,6 +1452,12 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
+            db.execSQL(
+                    "DELETE FROM sync_queue WHERE action IN (?, ?) AND NOT EXISTS (" +
+                            "SELECT 1 FROM punch_records p " +
+                            "WHERE p.client_record_id=sync_queue.record_id)",
+                    new Object[]{Constants.ACTION_PUNCH_ACCEPT, Constants.ACTION_PUNCH_PUSH});
+
             ContentValues pending = new ContentValues();
             pending.put("punch_state", PunchRecord.STATE_ACCEPTED);
             db.update(
@@ -1541,20 +1547,24 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
 
     public int getPendingCount() {
-        return getUnsyncedPunchCount() + getOtherPendingQueueCount();
+        return getPendingPunchCount();
     }
 
-    private int getUnsyncedPunchCount() {
+    /**
+     * User-visible pending punch count.
+     *
+     * <p>Count business records, not sync_queue rows. One punch may own an acceptance or upload
+     * queue item, and stale/technical queue rows must never inflate the UI's "待同步" number.</p>
+     */
+    public int getPendingPunchCount() {
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT COUNT(*) FROM punch_records WHERE is_synced=0", null);
-        try { return c.moveToFirst() ? c.getInt(0) : 0; }
-        finally { c.close(); }
-    }
-
-    private int getOtherPendingQueueCount() {
-        Cursor c = getReadableDatabase().rawQuery(
-                "SELECT COUNT(*) FROM sync_queue WHERE action<>?",
-                new String[]{Constants.ACTION_PUNCH_PUSH});
+                "SELECT COUNT(*) FROM punch_records " +
+                        "WHERE is_synced=0 AND punch_state IN (?, ?, ?)",
+                new String[]{
+                        PunchRecord.STATE_ACCEPTING,
+                        PunchRecord.STATE_ACCEPTED,
+                        PunchRecord.STATE_UPLOADING
+                });
         try { return c.moveToFirst() ? c.getInt(0) : 0; }
         finally { c.close(); }
     }

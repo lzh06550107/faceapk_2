@@ -11,6 +11,8 @@ import com.punch.app.utils.SessionManager;
 
 public class SyncService extends Service {
     public static final String ACTION_SYNC_NOW = "com.punch.app.SYNC_NOW";
+    public static final String ACTION_PUNCH_SYNC_STATE_CHANGED =
+            "com.punch.app.PUNCH_SYNC_STATE_CHANGED";
     public static final String EXTRA_SYNC_TRIGGER = "sync_trigger";
 
     @Override

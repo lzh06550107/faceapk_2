@@ -12,6 +12,7 @@ import android.view.View;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
@@ -48,6 +49,13 @@ public class MainActivity extends AppCompatActivity {
     private Fragment currentFragment;
 
     private boolean punchFullscreen = false;
+
+    private final BroadcastReceiver syncStateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            updateBanner(isNetworkAvailable());
+        }
+    };
 
     private final BroadcastReceiver networkReceiver = new BroadcastReceiver() {
         @Override
@@ -99,6 +107,12 @@ public class MainActivity extends AppCompatActivity {
         });
 
         registerReceiver(networkReceiver, new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
+        ContextCompat.registerReceiver(
+                this,
+                syncStateReceiver,
+                new IntentFilter(SyncService.ACTION_PUNCH_SYNC_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+        );
 
         updateBanner(isNetworkAvailable());
         if (SessionManager.get().isTokenValid()) {
@@ -119,6 +133,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         KioskManager.enterIfPossible(this);
+        updateBanner(isNetworkAvailable());
     }
 
     @Override
@@ -165,6 +180,7 @@ public class MainActivity extends AppCompatActivity {
         if (fragment == recordsFragment) {
             recordsFragment.onPanelEntered();
         }
+        updateBanner(isNetworkAvailable());
     }
 
     private Fragment fragmentForNavItem(int itemId) {
@@ -222,7 +238,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        int pending = DatabaseHelper.get(this).getPendingCount();
+        int pending = DatabaseHelper.get(this).getPendingPunchCount();
         if (!online) {
             tvBanner.setVisibility(View.VISIBLE);
             tvBanner.setBackgroundColor(0xFFC62828);
@@ -288,5 +304,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         unregisterReceiver(networkReceiver);
+        unregisterReceiver(syncStateReceiver);
     }
 }
