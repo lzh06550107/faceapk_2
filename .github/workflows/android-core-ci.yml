@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/android12-platform-permission-minimal
+      - change-daka-logic
   pull_request:
   workflow_dispatch:
 
