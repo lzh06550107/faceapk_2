@@ -42,8 +42,6 @@ import java.util.concurrent.Future;
 
 public class RecordsFragment extends Fragment {
     private static final int PAGE_SIZE = 20;
-    private static final String FREE_PUNCH_OPTION_LABEL = "\u81ea\u7531\u6253\u5361";
-    private static final String PUNCH_TYPE_FREE = "free";
     private static final String UNSCHEDULED_PUNCH_OPTION_LABEL = "\u672a\u914d\u7f6e\u73ed\u6b21";
 
     private ToggleButton toggleMode;
@@ -58,6 +56,7 @@ public class RecordsFragment extends Fragment {
     private TextView tvSpecialLabel;
     private View viewSpecialGap;
     private View layoutSpecialCard;
+    private View layoutRecordFilters;
     private Spinner spinnerPunchIndex;
     private Spinner spinnerStatus;
     private RecyclerView recyclerView;
@@ -114,6 +113,7 @@ public class RecordsFragment extends Fragment {
         tvSpecialLabel = view.findViewById(R.id.tv_special_label);
         viewSpecialGap = view.findViewById(R.id.view_special_gap);
         layoutSpecialCard = view.findViewById(R.id.layout_special_card);
+        layoutRecordFilters = view.findViewById(R.id.layout_record_filters);
         spinnerPunchIndex = view.findViewById(R.id.spinner_punch_index);
         spinnerStatus = view.findViewById(R.id.spinner_status);
         recyclerView = view.findViewById(R.id.recycler_view);
@@ -291,11 +291,21 @@ public class RecordsFragment extends Fragment {
             return;
         }
 
-        String currentLabel = selectedPunchOption != null ? selectedPunchOption.label : null;
+        suppressSelectionCallback = true;
         punchOptions.clear();
+        punchOptionAdapter.clear();
+
+        if (!preferOnlineMode) {
+            punchOptionAdapter.notifyDataSetChanged();
+            selectedPunchOption = null;
+            suppressSelectionCallback = false;
+            return;
+        }
+
+        String currentLabel = selectedPunchOption != null ? selectedPunchOption.label : null;
         punchOptions.addAll(buildPunchOptions(
                 SessionManager.get().getCurrentTeamTimeRanges(),
-                preferOnlineMode
+                true
         ));
 
         List<String> labels = new ArrayList<>(punchOptions.size());
@@ -308,20 +318,22 @@ public class RecordsFragment extends Fragment {
             }
         }
 
-        suppressSelectionCallback = true;
-        punchOptionAdapter.clear();
         punchOptionAdapter.addAll(labels);
         punchOptionAdapter.notifyDataSetChanged();
-        spinnerPunchIndex.setSelection(selectedIndex, false);
+        if (!punchOptions.isEmpty()) {
+            spinnerPunchIndex.setSelection(selectedIndex, false);
+            selectedPunchOption = punchOptions.get(selectedIndex);
+        } else {
+            selectedPunchOption = null;
+        }
         suppressSelectionCallback = false;
-        selectedPunchOption = punchOptions.get(selectedIndex);
     }
 
     static List<PunchOption> buildPunchOptions(List<String> timeRanges,
                                                boolean onlineMode) {
         List<PunchOption> options = new ArrayList<>();
         if (!onlineMode) {
-            options.add(new PunchOption(FREE_PUNCH_OPTION_LABEL, 0, true));
+            return options;
         }
 
         int clockIndex = 1;
@@ -376,6 +388,7 @@ public class RecordsFragment extends Fragment {
 
     private void applyMode(boolean useOnline) {
         onlineMode = useOnline;
+        layoutRecordFilters.setVisibility(useOnline ? View.VISIBLE : View.GONE);
         spinnerStatus.setVisibility(useOnline ? View.VISIBLE : View.GONE);
         viewSpecialGap.setVisibility(useOnline ? View.VISIBLE : View.GONE);
         layoutSpecialCard.setVisibility(useOnline ? View.VISIBLE : View.GONE);
@@ -465,25 +478,15 @@ public class RecordsFragment extends Fragment {
         final int requestViewToken = viewToken;
         final String date = selectedDate;
         final String lineCode = SessionManager.get().getLineCode();
-        final PunchOption punchOption = selectedPunchOption;
 
-        List<PunchRecord> allPunches = DatabaseHelper.get(requireContext())
+        // Local records are raw punch events. Shift/sign-in/sign-out classification is decided
+        // by the server, so the offline panel must not filter by local clock_index.
+        List<PunchRecord> records = DatabaseHelper.get(requireContext())
                 .getPunchRecordsByDate(date, lineCode);
-        List<PunchRecord> filtered = new ArrayList<>();
         int syncedCount = 0;
         int pendingCount = 0;
-        for (PunchRecord record : allPunches) {
-            if (punchOption != null) {
-                if (punchOption.freePunch) {
-                    if (record.clockIndex != 0 && !PUNCH_TYPE_FREE.equals(record.punchType)) {
-                        continue;
-                    }
-                } else if (record.clockIndex != punchOption.clockIndex) {
-                    continue;
-                }
-            }
-            filtered.add(record);
-            if (record.isSynced == 1) {
+        for (PunchRecord record : records) {
+            if (record.isSynced == 1 || PunchRecord.STATE_SYNCED.equals(record.punchState)) {
                 syncedCount++;
             } else {
                 pendingCount++;
@@ -497,10 +500,10 @@ public class RecordsFragment extends Fragment {
             tvTotalLabel.setText("\u672c\u5730\u8bb0\u5f55");
             tvClockedLabel.setText("\u5df2\u540c\u6b65");
             tvUnclockedLabel.setText("待处理");
-            tvTotalCount.setText(String.valueOf(filtered.size()));
+            tvTotalCount.setText(String.valueOf(records.size()));
             tvClockedCount.setText(String.valueOf(finalSyncedCount));
             tvUnclockedCount.setText(String.valueOf(finalPendingCount));
-            localAdapter.update(filtered);
+            localAdapter.update(records);
         });
     }
 
@@ -591,6 +594,7 @@ public class RecordsFragment extends Fragment {
         tvSpecialLabel = null;
         viewSpecialGap = null;
         layoutSpecialCard = null;
+        layoutRecordFilters = null;
         spinnerPunchIndex = null;
         spinnerStatus = null;
         recyclerView = null;

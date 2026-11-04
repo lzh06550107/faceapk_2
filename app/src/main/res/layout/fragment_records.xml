@@ -195,6 +195,7 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/layout_record_filters"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#F5F7FA"

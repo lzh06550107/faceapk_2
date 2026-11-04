@@ -46,22 +46,17 @@ public class RecordsPunchOptionsTest {
     }
 
     @Test
-    public void offlineOptionsKeepFreePunchAndEveryConfiguredRange() {
+    public void offlineModeDoesNotExposeShiftOptions() {
         List<RecordsFragment.PunchOption> options = RecordsFragment.buildPunchOptions(
                 Arrays.asList(
                         "06:00-10:00",
                         "10:00-14:00",
-                        "14:00-18:00",
-                        "18:00-22:00",
-                        "22:00-02:00"
+                        "14:00-18:00"
                 ),
                 false
         );
 
-        assertEquals(11, options.size());
-        assertOption(options.get(0), "\u81ea\u7531\u6253\u5361", 0, true);
-        assertOption(options.get(9), "22:00-02:00 \u4e0a\u73ed", 9, false);
-        assertOption(options.get(10), "22:00-02:00 \u4e0b\u73ed", 10, false);
+        assertTrue(options.isEmpty());
     }
 
     private static void assertOption(RecordsFragment.PunchOption option,
