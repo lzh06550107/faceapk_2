@@ -248,7 +248,7 @@
                         android:paddingBottom="4dp"
                         android:text="本次抓拍"
                         android:textColor="@color/text_primary"
-                        android:textSize="14sp"
+                        android:textSize="11sp"
                         android:textStyle="bold" />
                 </LinearLayout>
             </FrameLayout>
@@ -295,7 +295,7 @@
                     android:paddingVertical="4dp"
                     android:text="准备中"
                     android:textColor="@color/white"
-                    android:textSize="14sp"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -350,7 +350,7 @@
                     android:layout_marginTop="4dp"
                     android:text="正在获取员工变更..."
                     android:textColor="#D7E0EA"
-                    android:textSize="14sp" />
+                    android:textSize="11sp" />
 
                 <ProgressBar
                     android:id="@+id/progress_employee_sync"
