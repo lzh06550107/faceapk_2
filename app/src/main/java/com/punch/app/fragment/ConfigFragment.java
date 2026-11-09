@@ -323,8 +323,7 @@ public class ConfigFragment extends Fragment {
                 return bindBindingOptionView(
                         convertView,
                         parent,
-                        option == null ? "" : option.primaryText(),
-                        option == null ? "" : option.secondaryText()
+                        option == null ? "" : option.primaryText()
                 );
             }
 
@@ -338,7 +337,7 @@ public class ConfigFragment extends Fragment {
         dropdownLineBinding.setOnItemClickListener((parent, view, position, id) -> {
             selectedLineBinding = lineBindingAdapter.getItem(position);
             if (selectedLineBinding != null) {
-                dropdownLineBinding.setText(selectedLineBinding.displayText(), false);
+                dropdownLineBinding.setText(selectedLineBinding.primaryText(), false);
             }
         });
         dropdownLineBinding.setOnClickListener(v -> dropdownLineBinding.showDropDown());
@@ -360,8 +359,7 @@ public class ConfigFragment extends Fragment {
                 return bindBindingOptionView(
                         convertView,
                         parent,
-                        option == null ? "" : option.primaryText(),
-                        option == null ? "" : option.secondaryText()
+                        option == null ? "" : option.primaryText()
                 );
             }
 
@@ -375,7 +373,7 @@ public class ConfigFragment extends Fragment {
         dropdownTeamBinding.setOnItemClickListener((parent, view, position, id) -> {
             selectedTeamBinding = teamBindingAdapter.getItem(position);
             if (selectedTeamBinding != null) {
-                dropdownTeamBinding.setText(selectedTeamBinding.displayText(), false);
+                dropdownTeamBinding.setText(selectedTeamBinding.primaryText(), false);
             }
         });
         dropdownTeamBinding.setOnClickListener(v -> dropdownTeamBinding.showDropDown());
@@ -388,24 +386,14 @@ public class ConfigFragment extends Fragment {
 
     private View bindBindingOptionView(@Nullable View convertView,
                                        @NonNull ViewGroup parent,
-                                       String primaryText,
-                                       String secondaryText) {
+                                       String primaryText) {
         View view = convertView;
         if (view == null || view.findViewById(R.id.tv_binding_option_primary) == null) {
             view = LayoutInflater.from(parent.getContext())
                     .inflate(R.layout.item_binding_option, parent, false);
         }
         TextView primary = view.findViewById(R.id.tv_binding_option_primary);
-        TextView secondary = view.findViewById(R.id.tv_binding_option_secondary);
         primary.setText(primaryText == null ? "" : primaryText);
-        String secondaryValue = secondaryText == null ? "" : secondaryText.trim();
-        if (secondaryValue.isEmpty()) {
-            secondary.setVisibility(View.GONE);
-            secondary.setText("");
-        } else {
-            secondary.setVisibility(View.VISIBLE);
-            secondary.setText(secondaryValue);
-        }
         return view;
     }
 
@@ -556,12 +544,12 @@ public class ConfigFragment extends Fragment {
         for (LineBindingOption option : lineOptions) {
             if (targetCode.equals(option.code)) {
                 selectedLineBinding = option;
-                dropdownLineBinding.setText(option.displayText(), false);
+                dropdownLineBinding.setText(option.primaryText(), false);
                 return;
             }
         }
         selectedLineBinding = lineOptions.get(0);
-        dropdownLineBinding.setText(selectedLineBinding.displayText(), false);
+        dropdownLineBinding.setText(selectedLineBinding.primaryText(), false);
     }
 
     private void selectTeamBinding(int teamId) {
@@ -573,12 +561,12 @@ public class ConfigFragment extends Fragment {
         for (TeamBindingOption option : teamOptions) {
             if (teamId == option.id) {
                 selectedTeamBinding = option;
-                dropdownTeamBinding.setText(option.displayText(), false);
+                dropdownTeamBinding.setText(option.primaryText(), false);
                 return;
             }
         }
         selectedTeamBinding = teamOptions.get(0);
-        dropdownTeamBinding.setText(selectedTeamBinding.displayText(), false);
+        dropdownTeamBinding.setText(selectedTeamBinding.primaryText(), false);
     }
 
     @Nullable
@@ -588,7 +576,7 @@ public class ConfigFragment extends Fragment {
         }
         String currentText = dropdownLineBinding.getText() == null ? "" : dropdownLineBinding.getText().toString().trim();
         for (LineBindingOption option : lineOptions) {
-            if (option.toString().equals(currentText) || option.displayText().equals(currentText)) {
+            if (option.toString().equals(currentText) || option.primaryText().equals(currentText)) {
                 return option;
             }
         }
@@ -602,7 +590,7 @@ public class ConfigFragment extends Fragment {
         }
         String currentText = dropdownTeamBinding.getText() == null ? "" : dropdownTeamBinding.getText().toString().trim();
         for (TeamBindingOption option : teamOptions) {
-            if (option.toString().equals(currentText) || option.displayText().equals(currentText)) {
+            if (option.toString().equals(currentText) || option.primaryText().equals(currentText)) {
                 return option;
             }
         }
@@ -1072,18 +1060,6 @@ public class ConfigFragment extends Fragment {
             return code.isEmpty() ? "-" : code;
         }
 
-        private String secondaryText() {
-            if (code.isEmpty() || code.equals(name)) {
-                return "";
-            }
-            return "线体代码：" + code;
-        }
-
-        private String displayText() {
-            String secondary = secondaryText();
-            return secondary.isEmpty() ? primaryText() : primaryText() + "\n" + secondary;
-        }
-
         @NonNull
         @Override
         public String toString() {
@@ -1115,15 +1091,6 @@ public class ConfigFragment extends Fragment {
             return id > 0 ? String.valueOf(id) : "-";
         }
 
-        private String secondaryText() {
-            return id > 0 ? "班组编号：" + id : "";
-        }
-
-        private String displayText() {
-            String secondary = secondaryText();
-            return secondary.isEmpty() ? primaryText() : primaryText() + "\n" + secondary;
-        }
-
         @NonNull
         @Override
         public String toString() {
@@ -1139,4 +1106,5 @@ public class ConfigFragment extends Fragment {
             return name + " (" + id + ")";
         }
     }
+
 }

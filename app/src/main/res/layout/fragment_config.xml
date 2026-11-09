@@ -60,9 +60,9 @@
                     android:orientation="horizontal">
 
                     <TextView
-                        android:layout_width="78dp"
+                        android:layout_width="48dp"
                         android:layout_height="wrap_content"
-                        android:text="绑定线体"
+                        android:text="线体"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp" />
 
@@ -79,13 +79,13 @@
                             android:id="@+id/dropdown_line_binding"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:minHeight="58dp"
+                            android:minHeight="52dp"
                             android:clickable="true"
                             android:cursorVisible="false"
                             android:dropDownVerticalOffset="4dp"
                             android:gravity="center_vertical"
                             android:inputType="none"
-                            android:maxLines="4"
+                            android:maxLines="3"
                             android:paddingStart="10dp"
                             android:paddingTop="6dp"
                             android:paddingEnd="10dp"
@@ -102,9 +102,9 @@
                     android:orientation="horizontal">
 
                     <TextView
-                        android:layout_width="78dp"
+                        android:layout_width="48dp"
                         android:layout_height="wrap_content"
-                        android:text="绑定班组"
+                        android:text="班组"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp" />
 
@@ -121,13 +121,13 @@
                             android:id="@+id/dropdown_team_binding"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:minHeight="58dp"
+                            android:minHeight="52dp"
                             android:clickable="true"
                             android:cursorVisible="false"
                             android:dropDownVerticalOffset="4dp"
                             android:gravity="center_vertical"
                             android:inputType="none"
-                            android:maxLines="4"
+                            android:maxLines="3"
                             android:paddingStart="10dp"
                             android:paddingTop="6dp"
                             android:paddingEnd="10dp"

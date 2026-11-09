@@ -18,17 +18,14 @@ public final class PunchEntryLineReminder {
 
     static String buildLineLabel(String lineName, String lineCode) {
         String name = clean(lineName);
-        String code = clean(lineCode);
-        if (name.isEmpty() && code.isEmpty()) {
-            return "未绑定线体";
-        }
-        if (name.isEmpty()) {
-            return code;
-        }
-        if (code.isEmpty() || name.equals(code)) {
+        if (!name.isEmpty()) {
             return name;
         }
-        return name + "（" + code + "）";
+        String code = clean(lineCode);
+        if (!code.isEmpty()) {
+            return code;
+        }
+        return "未选择";
     }
 
     private static String clean(String value) {

@@ -2322,11 +2322,7 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         AlertDialog dialog = new AlertDialog.Builder(requireContext())
                 .setTitle("请确认当前打卡线体")
                 .setMessage(message)
-                .setPositiveButton("我知道了", (d, which) -> {
-                    if (punchEntryLineReminderDialog == d) {
-                        punchEntryLineReminderDialog = null;
-                    }
-                })
+                .setPositiveButton("我知道了", null)
                 .setCancelable(false)
                 .create();
         punchEntryLineReminderDialog = dialog;
@@ -2334,6 +2330,42 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
             if (punchEntryLineReminderDialog == d) {
                 punchEntryLineReminderDialog = null;
             }
+        });
+        dialog.setOnShowListener(d -> {
+            TextView messageView = dialog.findViewById(android.R.id.message);
+            if (messageView != null) {
+                messageView.setTextSize(18f);
+                messageView.setLineSpacing(0f, 1.18f);
+            }
+
+            android.widget.Button positiveButton =
+                    dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE);
+            if (positiveButton == null) {
+                return;
+            }
+            positiveButton.setTextSize(17f);
+            positiveButton.setEnabled(false);
+            positiveButton.setText("我知道了（3s）");
+            positiveButton.setOnClickListener(v -> dialog.dismiss());
+
+            final int[] remainingSeconds = {3};
+            Runnable countdown = new Runnable() {
+                @Override
+                public void run() {
+                    if (punchEntryLineReminderDialog != dialog || !dialog.isShowing()) {
+                        return;
+                    }
+                    remainingSeconds[0] -= 1;
+                    if (remainingSeconds[0] <= 0) {
+                        positiveButton.setText("我知道了");
+                        positiveButton.setEnabled(true);
+                        return;
+                    }
+                    positiveButton.setText("我知道了（" + remainingSeconds[0] + "s）");
+                    uiHandler.postDelayed(this, 1000L);
+                }
+            };
+            uiHandler.postDelayed(countdown, 1000L);
         });
         dialog.show();
     }
