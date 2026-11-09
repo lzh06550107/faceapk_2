@@ -6,6 +6,7 @@ on:
       - feature/android12-platform-permission-minimal
       - change-daka-logic
       - feature/punch-entry-line-reminder
+      - feature/binding-long-text-display
   pull_request:
   workflow_dispatch:
 

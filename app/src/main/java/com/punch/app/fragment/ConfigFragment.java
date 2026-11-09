@@ -311,16 +311,36 @@ public class ConfigFragment extends Fragment {
     }
 
     private void setupBindingDropdowns() {
-        lineBindingAdapter = new ArrayAdapter<>(
+        lineBindingAdapter = new ArrayAdapter<LineBindingOption>(
                 requireContext(),
-                android.R.layout.simple_spinner_dropdown_item,
+                R.layout.item_binding_option,
                 lineOptions
-        );
-        lineBindingAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        ) {
+            @NonNull
+            @Override
+            public View getView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
+                LineBindingOption option = getItem(position);
+                return bindBindingOptionView(
+                        convertView,
+                        parent,
+                        option == null ? "" : option.primaryText(),
+                        option == null ? "" : option.secondaryText()
+                );
+            }
+
+            @Override
+            public View getDropDownView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
+                return getView(position, convertView, parent);
+            }
+        };
         dropdownLineBinding.setThreshold(0);
         dropdownLineBinding.setAdapter(lineBindingAdapter);
-        dropdownLineBinding.setOnItemClickListener((parent, view, position, id) ->
-                selectedLineBinding = lineBindingAdapter.getItem(position));
+        dropdownLineBinding.setOnItemClickListener((parent, view, position, id) -> {
+            selectedLineBinding = lineBindingAdapter.getItem(position);
+            if (selectedLineBinding != null) {
+                dropdownLineBinding.setText(selectedLineBinding.displayText(), false);
+            }
+        });
         dropdownLineBinding.setOnClickListener(v -> dropdownLineBinding.showDropDown());
         dropdownLineBinding.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
@@ -328,22 +348,65 @@ public class ConfigFragment extends Fragment {
             }
         });
 
-        teamBindingAdapter = new ArrayAdapter<>(
+        teamBindingAdapter = new ArrayAdapter<TeamBindingOption>(
                 requireContext(),
-                android.R.layout.simple_spinner_dropdown_item,
+                R.layout.item_binding_option,
                 teamOptions
-        );
-        teamBindingAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        ) {
+            @NonNull
+            @Override
+            public View getView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
+                TeamBindingOption option = getItem(position);
+                return bindBindingOptionView(
+                        convertView,
+                        parent,
+                        option == null ? "" : option.primaryText(),
+                        option == null ? "" : option.secondaryText()
+                );
+            }
+
+            @Override
+            public View getDropDownView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
+                return getView(position, convertView, parent);
+            }
+        };
         dropdownTeamBinding.setThreshold(0);
         dropdownTeamBinding.setAdapter(teamBindingAdapter);
-        dropdownTeamBinding.setOnItemClickListener((parent, view, position, id) ->
-                selectedTeamBinding = teamBindingAdapter.getItem(position));
+        dropdownTeamBinding.setOnItemClickListener((parent, view, position, id) -> {
+            selectedTeamBinding = teamBindingAdapter.getItem(position);
+            if (selectedTeamBinding != null) {
+                dropdownTeamBinding.setText(selectedTeamBinding.displayText(), false);
+            }
+        });
         dropdownTeamBinding.setOnClickListener(v -> dropdownTeamBinding.showDropDown());
         dropdownTeamBinding.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
                 dropdownTeamBinding.showDropDown();
             }
         });
+    }
+
+    private View bindBindingOptionView(@Nullable View convertView,
+                                       @NonNull ViewGroup parent,
+                                       String primaryText,
+                                       String secondaryText) {
+        View view = convertView;
+        if (view == null || view.findViewById(R.id.tv_binding_option_primary) == null) {
+            view = LayoutInflater.from(parent.getContext())
+                    .inflate(R.layout.item_binding_option, parent, false);
+        }
+        TextView primary = view.findViewById(R.id.tv_binding_option_primary);
+        TextView secondary = view.findViewById(R.id.tv_binding_option_secondary);
+        primary.setText(primaryText == null ? "" : primaryText);
+        String secondaryValue = secondaryText == null ? "" : secondaryText.trim();
+        if (secondaryValue.isEmpty()) {
+            secondary.setVisibility(View.GONE);
+            secondary.setText("");
+        } else {
+            secondary.setVisibility(View.VISIBLE);
+            secondary.setText(secondaryValue);
+        }
+        return view;
     }
 
     private void ensureDefaultBindingOptions() {
@@ -493,12 +556,12 @@ public class ConfigFragment extends Fragment {
         for (LineBindingOption option : lineOptions) {
             if (targetCode.equals(option.code)) {
                 selectedLineBinding = option;
-                dropdownLineBinding.setText(option.toString(), false);
+                dropdownLineBinding.setText(option.displayText(), false);
                 return;
             }
         }
         selectedLineBinding = lineOptions.get(0);
-        dropdownLineBinding.setText(selectedLineBinding.toString(), false);
+        dropdownLineBinding.setText(selectedLineBinding.displayText(), false);
     }
 
     private void selectTeamBinding(int teamId) {
@@ -510,12 +573,12 @@ public class ConfigFragment extends Fragment {
         for (TeamBindingOption option : teamOptions) {
             if (teamId == option.id) {
                 selectedTeamBinding = option;
-                dropdownTeamBinding.setText(option.toString(), false);
+                dropdownTeamBinding.setText(option.displayText(), false);
                 return;
             }
         }
         selectedTeamBinding = teamOptions.get(0);
-        dropdownTeamBinding.setText(selectedTeamBinding.toString(), false);
+        dropdownTeamBinding.setText(selectedTeamBinding.displayText(), false);
     }
 
     @Nullable
@@ -525,7 +588,7 @@ public class ConfigFragment extends Fragment {
         }
         String currentText = dropdownLineBinding.getText() == null ? "" : dropdownLineBinding.getText().toString().trim();
         for (LineBindingOption option : lineOptions) {
-            if (option.toString().equals(currentText)) {
+            if (option.toString().equals(currentText) || option.displayText().equals(currentText)) {
                 return option;
             }
         }
@@ -539,7 +602,7 @@ public class ConfigFragment extends Fragment {
         }
         String currentText = dropdownTeamBinding.getText() == null ? "" : dropdownTeamBinding.getText().toString().trim();
         for (TeamBindingOption option : teamOptions) {
-            if (option.toString().equals(currentText)) {
+            if (option.toString().equals(currentText) || option.displayText().equals(currentText)) {
                 return option;
             }
         }
@@ -1002,6 +1065,25 @@ public class ConfigFragment extends Fragment {
             this.name = name == null ? "" : name;
         }
 
+        private String primaryText() {
+            if (!name.isEmpty()) {
+                return name;
+            }
+            return code.isEmpty() ? "-" : code;
+        }
+
+        private String secondaryText() {
+            if (code.isEmpty() || code.equals(name)) {
+                return "";
+            }
+            return "线体代码：" + code;
+        }
+
+        private String displayText() {
+            String secondary = secondaryText();
+            return secondary.isEmpty() ? primaryText() : primaryText() + "\n" + secondary;
+        }
+
         @NonNull
         @Override
         public String toString() {
@@ -1024,6 +1106,22 @@ public class ConfigFragment extends Fragment {
             this.id = id;
             this.name = name == null ? "" : name;
             this.timeRanges = timeRanges == null ? new ArrayList<>() : new ArrayList<>(timeRanges);
+        }
+
+        private String primaryText() {
+            if (!name.isEmpty()) {
+                return name;
+            }
+            return id > 0 ? String.valueOf(id) : "-";
+        }
+
+        private String secondaryText() {
+            return id > 0 ? "班组编号：" + id : "";
+        }
+
+        private String displayText() {
+            String secondary = secondaryText();
+            return secondary.isEmpty() ? primaryText() : primaryText() + "\n" + secondary;
         }
 
         @NonNull
