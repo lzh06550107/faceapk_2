@@ -18,14 +18,7 @@ public final class PunchEntryLineReminder {
 
     static String buildLineLabel(String lineName, String lineCode) {
         String name = clean(lineName);
-        if (!name.isEmpty()) {
-            return name;
-        }
-        String code = clean(lineCode);
-        if (!code.isEmpty()) {
-            return code;
-        }
-        return "未选择";
+        return name.isEmpty() ? "未选择" : name;
     }
 
     private static String clean(String value) {
