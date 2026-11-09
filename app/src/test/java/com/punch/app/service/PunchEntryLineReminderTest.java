@@ -14,9 +14,9 @@ public class PunchEntryLineReminderTest {
     }
 
     @Test
-    public void missingLineNameFallsBackToCode() {
+    public void missingLineNameDoesNotExposeCode() {
         assertEquals(
-                "当前线体：A01\n当前班组：未选择\n\n请确认当前线体无误后再进行打卡。",
+                "当前线体：未选择\n当前班组：未选择\n\n请确认当前线体无误后再进行打卡。",
                 PunchEntryLineReminder.buildMessage(" ", "A01", "")
         );
     }
