@@ -16,7 +16,7 @@
         android:layout_height="wrap_content"
         android:maxLines="4"
         android:textColor="@color/text_primary"
-        android:textSize="15sp"
+        android:textSize="17sp"
         android:textStyle="bold" />
 
 </LinearLayout>

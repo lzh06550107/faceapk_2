@@ -2318,10 +2318,70 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
                 SessionManager.get().getLineCode(),
                 SessionManager.get().getTeamBindingName()
         );
+        SpannableString styledMessage = new SpannableString(message);
+        int firstBreak = message.indexOf('\n');
+        int secondBreak = firstBreak < 0 ? -1 : message.indexOf('\n', firstBreak + 1);
+        if (firstBreak > 0) {
+            styledMessage.setSpan(
+                    new ForegroundColorSpan(Color.rgb(211, 47, 47)),
+                    0,
+                    firstBreak,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+            styledMessage.setSpan(
+                    new StyleSpan(android.graphics.Typeface.BOLD),
+                    0,
+                    firstBreak,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+            styledMessage.setSpan(
+                    new RelativeSizeSpan(1.18f),
+                    0,
+                    firstBreak,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+        if (secondBreak > firstBreak + 1) {
+            styledMessage.setSpan(
+                    new ForegroundColorSpan(Color.rgb(211, 47, 47)),
+                    firstBreak + 1,
+                    secondBreak,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+            styledMessage.setSpan(
+                    new StyleSpan(android.graphics.Typeface.BOLD),
+                    firstBreak + 1,
+                    secondBreak,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+            styledMessage.setSpan(
+                    new RelativeSizeSpan(1.18f),
+                    firstBreak + 1,
+                    secondBreak,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+        String warning = "选错班次班组会影响考勤结果，进而影响工资核算。";
+        int warningStart = message.indexOf(warning);
+        if (warningStart >= 0) {
+            int warningEnd = warningStart + warning.length();
+            styledMessage.setSpan(
+                    new ForegroundColorSpan(Color.rgb(211, 47, 47)),
+                    warningStart,
+                    warningEnd,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+            styledMessage.setSpan(
+                    new StyleSpan(android.graphics.Typeface.BOLD),
+                    warningStart,
+                    warningEnd,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
 
         AlertDialog dialog = new AlertDialog.Builder(requireContext())
                 .setTitle("请确认当前打卡线体")
-                .setMessage(message)
+                .setMessage(styledMessage)
                 .setPositiveButton("我知道了", null)
                 .setCancelable(false)
                 .create();
@@ -2334,8 +2394,8 @@ public class PunchFragment extends Fragment implements TextureView.SurfaceTextur
         dialog.setOnShowListener(d -> {
             TextView messageView = dialog.findViewById(android.R.id.message);
             if (messageView != null) {
-                messageView.setTextSize(18f);
-                messageView.setLineSpacing(0f, 1.18f);
+                messageView.setTextSize(19f);
+                messageView.setLineSpacing(0f, 1.22f);
             }
 
             android.widget.Button positiveButton =

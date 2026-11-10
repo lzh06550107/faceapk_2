@@ -13,6 +13,7 @@ public final class PunchEntryLineReminder {
         }
         return "当前线体：" + line
                 + "\n当前班组：" + team
+                + "\n\n选错班次班组会影响考勤结果，进而影响工资核算。"
                 + "\n\n请确认当前线体无误后再进行打卡。";
     }
 

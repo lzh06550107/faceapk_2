@@ -64,7 +64,7 @@
                         android:layout_height="wrap_content"
                         android:text="线体"
                         android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
+                        android:textSize="17sp" />
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:layout_width="0dp"
@@ -91,7 +91,7 @@
                             android:paddingEnd="10dp"
                             android:paddingBottom="6dp"
                             android:singleLine="false"
-                            android:textSize="13sp" />
+                            android:textSize="17sp" />
                     </com.google.android.material.textfield.TextInputLayout>
                 </LinearLayout>
 
@@ -106,7 +106,7 @@
                         android:layout_height="wrap_content"
                         android:text="班组"
                         android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
+                        android:textSize="17sp" />
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:layout_width="0dp"
@@ -133,7 +133,7 @@
                             android:paddingEnd="10dp"
                             android:paddingBottom="6dp"
                             android:singleLine="false"
-                            android:textSize="13sp" />
+                            android:textSize="17sp" />
                     </com.google.android.material.textfield.TextInputLayout>
                 </LinearLayout>
             </LinearLayout>
@@ -168,7 +168,7 @@
                         android:layout_height="wrap_content"
                         android:text="设备ID"
                         android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
+                        android:textSize="17sp" />
 
                     <TextView
                         android:id="@+id/tv_device_id"
@@ -178,7 +178,7 @@
                         android:ellipsize="end"
                         android:maxLines="1"
                         android:textColor="@color/text_primary"
-                        android:textSize="13sp" />
+                        android:textSize="17sp" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -198,7 +198,7 @@
                             android:layout_height="wrap_content"
                             android:text="版本状态"
                             android:textColor="@color/text_secondary"
-                            android:textSize="13sp" />
+                            android:textSize="17sp" />
 
                         <TextView
                             android:id="@+id/tv_update_status"
@@ -208,7 +208,7 @@
                             android:includeFontPadding="true"
                             android:lineSpacingExtra="2dp"
                             android:textColor="@color/text_primary"
-                            android:textSize="13sp" />
+                            android:textSize="17sp" />
                     </LinearLayout>
 
                     <com.google.android.material.button.MaterialButton
@@ -240,7 +240,7 @@
                         android:layout_height="wrap_content"
                         android:text="登录账号"
                         android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
+                        android:textSize="17sp" />
 
                     <TextView
                         android:id="@+id/tv_account"
@@ -248,7 +248,7 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:textColor="@color/text_primary"
-                        android:textSize="13sp" />
+                        android:textSize="17sp" />
                 </LinearLayout>
             </LinearLayout>
 
@@ -276,7 +276,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="12dp"
                     android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
+                    android:textSize="17sp" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btn_sync"

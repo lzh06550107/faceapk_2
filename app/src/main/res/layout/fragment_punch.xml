@@ -37,13 +37,13 @@
                 android:id="@+id/tv_line"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:background="#33FFFFFF"
+                android:background="#D32F2F"
                 android:gravity="center"
                 android:maxLines="3"
-                android:paddingHorizontal="9dp"
-                android:paddingVertical="3dp"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="4dp"
                 android:textColor="@color/white"
-                android:textSize="14sp"
+                android:textSize="16sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -51,13 +51,13 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:background="#33FFFFFF"
+                android:background="#D32F2F"
                 android:gravity="center"
                 android:maxLines="3"
-                android:paddingHorizontal="9dp"
-                android:paddingVertical="3dp"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="4dp"
                 android:textColor="@color/white"
-                android:textSize="14sp"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 android:visibility="gone" />
         </LinearLayout>
