@@ -148,7 +148,7 @@ public final class AvatarLoader {
         if (source.isEmpty()) {
             return null;
         }
-        if (source.startsWith("content://")) {
+        if (source.startsWith("content://") || source.startsWith("file://")) {
             return Uri.parse(source);
         }
         if (source.startsWith("http://") || source.startsWith("https://")) {
@@ -156,8 +156,11 @@ public final class AvatarLoader {
         }
 
         File file = new File(source);
-        if (file.exists()) {
+        if (file.exists() && file.isFile()) {
             return file;
+        }
+        if (AvatarLoadPolicy.isAndroidLocalAbsolutePath(source)) {
+            return null;
         }
 
         String baseUrl = SessionManager.get().getBaseUrl();
